@@ -1,0 +1,20 @@
+name = "multi-agent-demo"
+version = "0.1.0"
+apiVersion = "v2"
+description = "Kubernetes chart generated via KCL + TOML metadata"
+
+[services.python]
+image = "python-agent:latest"
+port = 5000
+
+[services.go]
+image = "go-agent:latest"
+port = 5001
+
+[services.rust]
+image = "rust-agent:latest"
+port = 5002
+
+[services.web]
+image = "web-app:latest"
+port = 5003

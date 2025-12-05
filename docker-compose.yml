@@ -1,0 +1,28 @@
+version: "3.9"
+
+services:
+  python-agent:
+    build: ./python-agent
+    ports:
+      - "5000:5000"
+    environment:
+      - PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+
+  go-agent:
+    build: ./go-agent
+    ports:
+      - "5001:5001"
+
+  rust-agent:
+    build: ./rust-agent
+    ports:
+      - "5002:5002"
+
+  web-ssr:
+    build: ./web-app
+    ports:
+      - "5003:5003"
+    depends_on:
+      - python-agent
+      - go-agent
+      - rust-agent

@@ -1,0 +1,94 @@
+name: Build and Push Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image/Chart version tag"
+        required: false
+        default: ""
+  push:
+    branches: [ main, master ]
+
+env:
+  VERSION: ${{ github.event.inputs.version || github.sha }}
+  REGISTRY1: sinova-cn-beijing.cr.volces.com
+  REGISTRY2: buka-cn-shanghai.cr.volces.com
+  NAMESPACE: buka
+  CHART_NAME: multi-agent-demo
+  CHART_VERSION: 0.1.0
+
+jobs:
+  docker-images:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: python-agent
+            context: python-agent
+          - name: go-agent
+            context: go-agent
+          - name: rust-agent
+            context: rust-agent
+          - name: web-app
+            context: web-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login registry Beijing
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY1 }}
+          username: alexhe@53804650
+          password: ${{ secrets.VOLCES_PASSWORD }}
+
+      - name: Login registry Shanghai
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY2 }}
+          username: alexhe@53804650
+          password: ${{ secrets.VOLCES_PASSWORD }}
+
+      - name: Build and push ${{ matrix.name }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.context }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY1 }}/${{ env.NAMESPACE }}/${{ matrix.name }}:${{ env.VERSION }}
+            ${{ env.REGISTRY2 }}/${{ env.NAMESPACE }}/${{ matrix.name }}:${{ env.VERSION }}
+          cache-from: type=registry,ref=${{ env.REGISTRY2 }}/${{ env.NAMESPACE }}/${{ matrix.name }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY2 }}/${{ env.NAMESPACE }}/${{ matrix.name }}:buildcache,mode=max
+
+  helm-chart:
+    needs: docker-images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm 3.14
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+
+      - name: Helm registry login
+        run: |
+          helm registry login ${{ env.REGISTRY2 }} \
+            --username alexhe@53804650 \
+            --password "${{ secrets.VOLCES_PASSWORD }}"
+
+      - name: Package chart
+        working-directory: deploy/chart
+        run: |
+          helm lint .
+          helm package . --version "${CHART_VERSION}" --app-version "${VERSION}"
+
+      - name: Push chart
+        working-directory: deploy/chart
+        run: |
+          FILE=$(ls ${CHART_NAME}-${CHART_VERSION}.tgz)
+          helm push "$FILE" "oci://${REGISTRY2}/${NAMESPACE}"
