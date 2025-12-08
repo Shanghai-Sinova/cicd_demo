@@ -5,6 +5,10 @@ on:
     branches: [main, master]
   pull_request:
 
+concurrency:
+  group: client-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -29,6 +33,12 @@ jobs:
         with:
           api-level: 34
           build-tools: 34.0.0
+
+      - name: Align local.properties with CI SDK path
+        run: |
+          cat > local.properties <<'EOF'
+          sdk.dir=${ANDROID_SDK_ROOT}
+          EOF
 
       - name: Gradle cache
         uses: gradle/actions/setup-gradle@v3
@@ -61,18 +71,19 @@ jobs:
           -project com.bukabuka.ios.xcodeproj
           -scheme com.bukabuka.ios
           -configuration Debug
+          -derivedDataPath build
           -destination 'generic/platform=iOS Simulator'
           CODE_SIGNING_ALLOWED=NO
           clean build
 
       - name: Upload .app bundle (simulator)
         run: |
-          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -maxdepth 5 -name "com.bukabuka.ios.app" -type d | head -n 1)
-          if [ -n "$APP_PATH" ]; then
-            tar -czf ios-sim-app.tar.gz -C "$APP_PATH/.." "$(basename "$APP_PATH")"
+          APP_PATH="build/Build/Products/Debug-iphonesimulator/com.bukabuka.ios.app"
+          if [ -d "$APP_PATH" ]; then
+            tar -czf ios-sim-app.tar.gz -C "$(dirname "$APP_PATH")" "$(basename "$APP_PATH")"
             echo "packaged $APP_PATH"
           else
-            echo "Simulator .app not found" && exit 1
+            echo "Simulator .app not found at $APP_PATH" && exit 1
           fi
         shell: bash
 
