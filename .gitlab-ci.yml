@@ -1,0 +1,149 @@
+stages:
+  - clients
+  - images
+  - chart
+
+variables:
+  OCI_URL: "buka-cn-shanghai.cr.volces.com"
+  NAMESPACE: "buka"
+  CHART_NAME: "multi-agent-demo"
+  CHART_VERSION: "0.1.0"
+  VERSION: "$CI_COMMIT_SHA"
+
+# Client apps are optional and off by default (enable with CI variable ENABLE_CLIENT_JOBS=true)
+.android_template: &android_template
+  stage: clients
+  rules:
+    - if: '$ENABLE_CLIENT_JOBS == "true"'
+  tags:
+    - docker
+
+android:
+  <<: *android_template
+  image: ghcr.io/cirruslabs/android-sdk:34
+  variables:
+    ANDROID_SDK_ROOT: /opt/android-sdk-linux
+  before_script:
+    - sdkmanager --licenses || true
+    - sdkmanager "platforms;android-34" "build-tools;34.0.0"
+    - cd android
+  script:
+    - ./gradlew --no-daemon assembleDebug
+  artifacts:
+    when: on_success
+    paths:
+      - android/app/build/outputs/apk/debug/*.apk
+
+ios:
+  stage: clients
+  tags:
+    - macos
+  rules:
+    - if: '$ENABLE_CLIENT_JOBS == "true"'
+  before_script:
+    - cd ios
+  script:
+    - xcodebuild \
+        -project com.bukabuka.ios.xcodeproj \
+        -scheme com.bukabuka.ios \
+        -configuration Debug \
+        -derivedDataPath build \
+        -destination 'generic/platform=iOS Simulator' \
+        CODE_SIGNING_ALLOWED=NO \
+        clean build
+  artifacts:
+    paths:
+      - ios/build/Build/Products/Debug-iphonesimulator/**/*.app
+
+harmony:
+  stage: clients
+  image: node:18-bullseye
+  rules:
+    - if: '$ENABLE_CLIENT_JOBS == "true"'
+  before_script:
+    - cd huawei-hamony
+    - npm config set registry https://registry.npmmirror.com
+    - npm config set @ohos:registry https://repo.harmonyos.com/npm/
+    - npm install
+  script:
+    - npm run build --if-present
+  artifacts:
+    paths:
+      - huawei-hamony/build*
+      - huawei-hamony/outputs*
+
+wechat-miniapp:
+  stage: clients
+  image: node:18-bullseye
+  rules:
+    - if: '$ENABLE_CLIENT_JOBS == "true"'
+  before_script:
+    - cd wechat-miniapp
+  script:
+    - node -e "['app.json','project.config.json','sitemap.json'].forEach(f=>JSON.parse(require('fs').readFileSync(f,'utf8')))"
+    - tar -czf ../wechat-miniapp.tar.gz .
+  artifacts:
+    paths:
+      - wechat-miniapp.tar.gz
+
+uniappx:
+  stage: clients
+  image: node:18-bullseye
+  rules:
+    - if: '$ENABLE_CLIENT_JOBS == "true"'
+  before_script:
+    - cd uniappx
+    - npm ci --legacy-peer-deps
+  script:
+    - npm run build:h5
+  artifacts:
+    paths:
+      - uniappx/dist
+
+# Docker images matrix build
+.docker_build_template: &docker_build_template
+  stage: images
+  image: docker:24.0.7-cli
+  services:
+    - name: docker:24.0.7-dind
+      command: ["--mtu=1460"]
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_HOST: tcp://docker:2375
+  before_script:
+    - echo "$VOLCES_PASSWORD" | docker login "$OCI_URL" -u "$VOLCES_USERNAME" --password-stdin
+    - docker buildx create --driver docker-container --name ci-builder --use || docker buildx use ci-builder
+
+
+docker-build:
+  <<: *docker_build_template
+  parallel:
+    matrix:
+      - IMAGE_NAME: python-agent
+        CONTEXT: python-agent
+      - IMAGE_NAME: go-agent
+        CONTEXT: go-agent
+      - IMAGE_NAME: rust-agent
+        CONTEXT: rust-agent
+      - IMAGE_NAME: web-app
+        CONTEXT: web-app
+  script:
+    - docker buildx build \
+        --push \
+        --tag ${OCI_URL}/${NAMESPACE}/${IMAGE_NAME}:${VERSION} \
+        --cache-from type=registry,ref=${OCI_URL}/${NAMESPACE}/${IMAGE_NAME}:buildcache \
+        --cache-to type=registry,ref=${OCI_URL}/${NAMESPACE}/${IMAGE_NAME}:buildcache,mode=max \
+        ${CONTEXT}
+
+helm-chart:
+  stage: chart
+  image: alpine/helm:3.14.4
+  variables:
+    HELM_EXPERIMENTAL_OCI: "1"
+  script:
+    - helm registry login ${OCI_URL} --username "$VOLCES_USERNAME" --password "$VOLCES_PASSWORD"
+    - cd deploy/chart
+    - helm lint .
+    - helm package . --version "${CHART_VERSION}" --app-version "${VERSION}"
+    - FILE=$(ls ${CHART_NAME}-${CHART_VERSION}.tgz)
+    - helm push "$FILE" "oci://${OCI_URL}/${NAMESPACE}"
