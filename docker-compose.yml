@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   python-agent:
     build: ./python-agent
@@ -22,7 +20,3 @@ services:
     build: ./web-app
     ports:
       - "5003:5003"
-    depends_on:
-      - python-agent
-      - go-agent
-      - rust-agent

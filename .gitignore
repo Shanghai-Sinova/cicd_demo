@@ -56,3 +56,15 @@ Thumbs.db
 
 # 朋友天虹
 .cargo
+
+android/.gradle
+android/.idea
+android/.kotlin
+node_modules
+pnpm-lock.yaml
+uniappx/node_modules
+ios/build
+web-app/.output
+web-app/.tanstack/tmp
+web-app/node_modules
+wechat-miniapp

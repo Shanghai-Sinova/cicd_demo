@@ -1,0 +1,170 @@
+name: Client Apps CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: Android Assemble (debug)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK 34
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 34
+          build-tools: 34.0.0
+
+      - name: Gradle cache
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Assemble debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+
+  ios:
+    name: iOS Simulator build
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build with xcodebuild (simulator)
+        env:
+          DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+        run: >
+          xcodebuild
+          -project com.bukabuka.ios.xcodeproj
+          -scheme com.bukabuka.ios
+          -configuration Debug
+          -destination 'generic/platform=iOS Simulator'
+          CODE_SIGNING_ALLOWED=NO
+          clean build
+
+      - name: Upload .app bundle (simulator)
+        run: |
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -maxdepth 5 -name "com.bukabuka.ios.app" -type d | head -n 1)
+          if [ -n "$APP_PATH" ]; then
+            tar -czf ios-sim-app.tar.gz -C "$APP_PATH/.." "$(basename "$APP_PATH")"
+            echo "packaged $APP_PATH"
+          else
+            echo "Simulator .app not found" && exit 1
+          fi
+        shell: bash
+
+      - name: Upload iOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-simulator-app
+          path: ios/ios-sim-app.tar.gz
+
+  harmony:
+    name: HarmonyOS hvigor build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: huawei-hamony
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+          cache-dependency-path: huawei-hamony/package-lock.json
+
+      - name: Configure Harmony registries
+        run: |
+          npm config set registry https://registry.npmmirror.com
+          npm config set @ohos:registry https://repo.harmonyos.com/npm/
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run hvigor build
+        run: npm run build --if-present
+
+      - name: Upload Harmony build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: harmony-build
+          path: |
+            huawei-hamony/build*
+            huawei-hamony/outputs*
+          if-no-files-found: warn
+
+  wechat-miniapp:
+    name: WeChat miniapp lint & package
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: wechat-miniapp
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate JSON configs
+        run: |
+          node -e "['app.json','project.config.json','sitemap.json'].forEach(f=>JSON.parse(require('fs').readFileSync(f,'utf8'))); console.log('Config JSON validated')"
+
+      - name: Package source
+        run: |
+          tar -czf ../wechat-miniapp.tar.gz .
+
+      - name: Upload miniapp source
+        uses: actions/upload-artifact@v4
+        with:
+          name: wechat-miniapp-source
+          path: wechat-miniapp.tar.gz
+
+  uniappx:
+    name: UniAppX H5 build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: uniappx
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+          cache-dependency-path: uniappx/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Build H5 bundle
+        run: npm run build:h5
+
+      - name: Upload H5 dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: uniappx-h5-dist
+          path: uniappx/dist

@@ -1,0 +1,11 @@
+{
+  "src": [
+    "pages/HomePage",
+    "pages/LoginPage",
+    "pages/CreationPage",
+    "pages/ProjectsPage",
+    "pages/ProfilePage",
+    "pages/NarrativePage",
+    "pages/PaymentPage"
+  ]
+}

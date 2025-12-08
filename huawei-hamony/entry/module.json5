@@ -1,0 +1,36 @@
+{
+  "module": {
+    "name": "entry",
+    "type": "entry",
+    "srcEntry": "./src/main/ets/entryability/EntryAbility.ts",
+    "description": "$string:app_name",
+    "mainElement": "EntryAbility",
+    "deviceTypes": [
+      "phone", "tablet"
+    ],
+    "deliveryWithInstall": true,
+    "installationFree": false,
+    "uiSyntax": "ets",
+    "pages": "$profile:main_pages",
+    "requestPermissions": [
+      {
+        "name": "ohos.permission.INTERNET",
+        "usedScene": { "ability": [ "EntryAbility" ], "when": "inuse" }
+      },
+      {
+        "name": "ohos.permission.GET_NETWORK_INFO",
+        "usedScene": { "ability": [ "EntryAbility" ], "when": "inuse" }
+      }
+    ],
+    "abilities": [
+      {
+        "name": "EntryAbility",
+        "srcEntry": "./src/main/ets/entryability/EntryAbility.ts",
+        "icon": "$media:app_icon",
+        "label": "$string:app_name",
+        "startWindowIcon": "$media:app_icon",
+        "startWindowBackground": "$color:start_window_bg"
+      }
+    ]
+  }
+}

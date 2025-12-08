@@ -12,8 +12,7 @@ on:
 
 env:
   VERSION: ${{ github.event.inputs.version || github.sha }}
-  REGISTRY1: sinova-cn-beijing.cr.volces.com
-  REGISTRY2: buka-cn-shanghai.cr.volces.com
+  OCI_URL: buka-cn-shanghai.cr.volces.com
   NAMESPACE: buka
   CHART_NAME: multi-agent-demo
   CHART_VERSION: 0.1.0
@@ -39,17 +38,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login registry Beijing
+      - name: Login registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY1 }}
-          username: alexhe@53804650
-          password: ${{ secrets.VOLCES_PASSWORD }}
-
-      - name: Login registry Shanghai
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY2 }}
+          registry: ${{ env.OCI_URL }}
           username: alexhe@53804650
           password: ${{ secrets.VOLCES_PASSWORD }}
 
@@ -59,10 +51,9 @@ jobs:
           context: ./${{ matrix.context }}
           push: true
           tags: |
-            ${{ env.REGISTRY1 }}/${{ env.NAMESPACE }}/${{ matrix.name }}:${{ env.VERSION }}
-            ${{ env.REGISTRY2 }}/${{ env.NAMESPACE }}/${{ matrix.name }}:${{ env.VERSION }}
-          cache-from: type=registry,ref=${{ env.REGISTRY2 }}/${{ env.NAMESPACE }}/${{ matrix.name }}:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY2 }}/${{ env.NAMESPACE }}/${{ matrix.name }}:buildcache,mode=max
+            ${{ env.OCI_URL }}/${{ env.NAMESPACE }}/${{ matrix.name }}:${{ env.VERSION }}
+          cache-from: type=registry,ref=${{ env.OCI_URL }}/${{ env.NAMESPACE }}/${{ matrix.name }}:buildcache
+          cache-to: type=registry,ref=${{ env.OCI_URL }}/${{ env.NAMESPACE }}/${{ matrix.name }}:buildcache,mode=max
 
   helm-chart:
     needs: docker-images
@@ -77,7 +68,7 @@ jobs:
 
       - name: Helm registry login
         run: |
-          helm registry login ${{ env.REGISTRY2 }} \
+          helm registry login ${{ env.OCI_URL }} \
             --username alexhe@53804650 \
             --password "${{ secrets.VOLCES_PASSWORD }}"
 
@@ -91,4 +82,4 @@ jobs:
         working-directory: deploy/chart
         run: |
           FILE=$(ls ${CHART_NAME}-${CHART_VERSION}.tgz)
-          helm push "$FILE" "oci://${REGISTRY2}/${NAMESPACE}"
+          helm push "$FILE" "oci://${OCI_URL}/${NAMESPACE}"

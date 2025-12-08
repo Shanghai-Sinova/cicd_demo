@@ -8,9 +8,8 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /app/hello ./main.go
 
 # Run stage
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM alpine:3.19
 WORKDIR /app
 COPY --from=builder /app/hello ./hello
 EXPOSE 5001
-USER nonroot
 ENTRYPOINT ["/app/hello"]

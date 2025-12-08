@@ -1,18 +1,15 @@
-FROM node:25-alpine AS base
-ENV PNPM_HOME=/root/.local/share/pnpm \
-    PATH="$PNPM_HOME:$PATH"
-RUN corepack enable
-RUN npm config set registry https://registry.npmmirror.com \\
-    && pnpm config set registry https://registry.npmmirror.com
-WORKDIR /app
-COPY package.json tsconfig.json tanstack.config.ts .npmrc pnpm-lock.yaml* ./
-COPY app ./app
-RUN pnpm install --frozen-lockfile || pnpm install
-RUN pnpm run build
+FROM node:22-alpine
+ENV PNPM_HOME=/root/.local/share/pnpm
+ENV PATH="${PNPM_HOME}:${PATH}"
 
-FROM node:22-alpine AS runner
-ENV NODE_ENV=production
+# 使用 npmmirror 加速
+RUN npm install -g pnpm@9.12.2 --registry https://registry.npmmirror.com
+
 WORKDIR /app
-COPY --from=base /app/dist ./dist
+COPY package.json pnpm-lock.yaml* ./
+RUN pnpm install --registry https://registry.npmmirror.com
+
+COPY . .
+
 EXPOSE 5003
-CMD ["node", "dist/server.js"]
+CMD ["pnpm", "dev", "--host", "0.0.0.0", "--port", "5003"]

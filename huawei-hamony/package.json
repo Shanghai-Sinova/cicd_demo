@@ -1,0 +1,13 @@
+{
+  "name": "novel-creation-harmony",
+  "version": "1.0.0",
+  "description": "跨端 AI 创作 HarmonyOS 客户端",
+  "scripts": {
+    "build": "hvigor --mode module --product default",
+    "dev": "hvigor --watch"
+  },
+  "devDependencies": {
+    "@ohos/hvigor": "4.0.0",
+    "@ohos/hvigor-ohos-plugin": "4.0.0"
+  }
+}

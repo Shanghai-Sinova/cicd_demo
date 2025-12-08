@@ -1,0 +1,2945 @@
+// File: Views/NarrativeLabView.swift
+import SwiftUI
+struct NarrativeLabView: View {
+  @EnvironmentObject private var viewModel: NarrativeViewModel
+  @EnvironmentObject private var creationViewModel: CreationViewModel
+  @EnvironmentObject private var userCenterViewModel: UserCenterViewModel
+  var body: some View {
+    NavigationView {
+      ScrollView {
+        VStack(spacing: 16) {
+          bindingSection
+          TokenUsageStrip(usage: viewModel.tokenUsage)
+          inputSection
+          threadsSection
+          beatsSection
+          compassSection
+          paymentShortcut
+        }
+        .padding()
+      }
+      .navigationTitle("多线叙事")
+      .toolbar {
+        ToolbarItem(placement: .navigationBarTrailing) {
+          Button {
+            Task { await viewModel.loadAll() }
+          } label: {
+            Image(systemName: "arrow.clockwise")
+          }
+        }
+      }
+      .task {
+        await autoBindProject()
+      }
+      .alert(isPresented: Binding<Bool>(get: { viewModel.errorMessage != nil }, set: { _ in viewModel.errorMessage = nil })) {
+        Alert(title: Text("提示"), message: Text(viewModel.errorMessage ?? ""), dismissButton: .default(Text("好的")))
+      }
+    }
+  }
+  private var bindingSection: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      Text("项目绑定").font(.headline)
+      TextField("项目ID", text: $viewModel.projectId)
+        .keyboardType(.numbersAndPunctuation)
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+      HStack {
+        Button {
+          Task { await viewModel.attachProject(viewModel.projectId) }
+        } label: {
+          Label("绑定并拉取", systemImage: "link")
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.borderedProminent)
+        Button {
+          Task { await viewModel.refreshCompass() }
+        } label: {
+          Label("更新罗盘", systemImage: "location.north.line")
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+      }
+    }
+    .padding()
+    .background(.ultraThinMaterial)
+    .clipShape(RoundedRectangle(cornerRadius: 16))
+  }
+  private var inputSection: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text("叙事线输入").font(.headline)
+      TextField("叙事线标题", text: $viewModel.draftTitle)
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+      TextField("概要 / 灵感", text: $viewModel.draftSummary, axis: .vertical)
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+      TextField("扩写提示（可用于继续当前线）", text: $viewModel.draftExpansion, axis: .vertical)
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+      HStack {
+        Button {
+          viewModel.recalculateTokens()
+          Task { await viewModel.createThread() }
+        } label: {
+          Label("新增叙事线", systemImage: "plus.circle.fill")
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.borderedProminent)
+        Button {
+          viewModel.recalculateTokens()
+          Task { await viewModel.continueThread() }
+        } label: {
+          Label("续写当前线", systemImage: "play.fill")
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .disabled(viewModel.selectedThreadId == nil)
+      }
+    }
+    .padding()
+    .background(Color(.systemBackground))
+    .clipShape(RoundedRectangle(cornerRadius: 16))
+    .onChange(of: viewModel.draftTitle) { _ in viewModel.recalculateTokens() }
+    .onChange(of: viewModel.draftSummary) { _ in viewModel.recalculateTokens() }
+    .onChange(of: viewModel.draftExpansion) { _ in viewModel.recalculateTokens() }
+  }
+  private var threadsSection: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack {
+        Text("叙事线").font(.headline)
+        Spacer()
+        Text("共 \(viewModel.threads.count) 条").font(.caption).foregroundStyle(.secondary)
+      }
+      LazyVStack(spacing: 10) {
+        ForEach(viewModel.threads) { thread in
+          NarrativeThreadCard(thread: thread, isSelected: thread.threadId == viewModel.selectedThreadId) {
+            viewModel.selectedThreadId = thread.threadId
+            Task { try? await viewModel.fetchBeatsIfNeeded() }
+          }
+        }
+        if viewModel.isLoading {
+          ProgressView().frame(maxWidth: .infinity)
+        }
+        if viewModel.threads.isEmpty && !viewModel.projectId.isEmpty {
+          Text("还没有叙事线，先填入标题与概要再点击新增叙事线。")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+      }
+    }
+  }
+  private var beatsSection: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack {
+        Text("节拍 / 片段").font(.headline)
+        Spacer()
+        if let threadId = viewModel.selectedThreadId {
+          Text("Line \(threadId)").font(.caption).foregroundStyle(.secondary)
+        }
+      }
+      LazyVStack(alignment: .leading, spacing: 8) {
+        ForEach(viewModel.beats) { beat in
+          VStack(alignment: .leading, spacing: 6) {
+            HStack {
+              Text("#\(beat.orderIndex)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+              Spacer()
+              Text("\(beat.tokensUsed ?? 0) tks")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
+            Text(beat.content)
+              .font(.body)
+            if let prompt = beat.prompt, !prompt.isEmpty {
+              Text("提示: \(prompt)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+          }
+          .padding()
+          .background(Color(.secondarySystemBackground))
+          .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+      }
+    }
+  }
+  private var compassSection: some View {
+    Group {
+      if let compass = viewModel.compass {
+        MemoryCompassPanel(compass: compass)
+      } else {
+        VStack(alignment: .leading, spacing: 8) {
+          Text("记忆罗盘").font(.headline)
+          Text("绑定项目并刷新后，展示叙事记忆锚点与决策。")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding()
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+      }
+    }
+  }
+  private var paymentShortcut: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("算力与积分").font(.headline)
+      Text("根据本地预估 Token 消耗，快速跳转支付补充积分。")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      HStack {
+        TokenUsageStrip(usage: viewModel.tokenUsage)
+        Spacer()
+        NavigationLink {
+          PaymentCenterView()
+            .environmentObject(userCenterViewModel)
+        } label: {
+          Label("去充值", systemImage: "creditcard")
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.green.opacity(0.15))
+            .clipShape(Capsule())
+        }
+      }
+    }
+    .padding()
+    .background(Color(.systemBackground))
+    .clipShape(RoundedRectangle(cornerRadius: 16))
+  }
+  private func autoBindProject() async {
+    if viewModel.projectId.isEmpty, !creationViewModel.projectId.isEmpty {
+      viewModel.projectId = creationViewModel.projectId
+      await viewModel.loadAll()
+    }
+  }
+}
+// File: Views/ProjectsView.swift
+import SwiftUI
+struct ProjectsView: View {
+  @EnvironmentObject private var viewModel: ProjectsViewModel
+  @State private var isPresentingCreation = false
+  var body: some View {
+    NavigationView {
+      VStack {
+        searchBar
+        statusFilter
+        projectList
+      }
+      .background(Color(.systemGroupedBackground))
+      .navigationTitle("项目管理")
+      .toolbar {
+        ToolbarItem(placement: .navigationBarTrailing) {
+          Button {
+            isPresentingCreation = true
+          } label: {
+            Image(systemName: "plus")
+          }
+        }
+        ToolbarItem(placement: .navigationBarLeading) {
+          Button {
+            Task { await viewModel.fetchProjects() }
+          } label: {
+            Image(systemName: "arrow.clockwise")
+          }
+        }
+      }
+      .sheet(isPresented: $isPresentingCreation) {
+        CreateProjectSheet(isPresented: $isPresentingCreation)
+      }
+    }
+  }
+  private var searchBar: some View {
+    HStack {
+      Image(systemName: "magnifyingglass")
+      TextField("搜索项目名称", text: $viewModel.searchText)
+        .submitLabel(.search)
+        .onSubmit {
+          Task { await viewModel.fetchProjects() }
+        }
+      if !viewModel.searchText.isEmpty {
+        Button {
+          viewModel.searchText = ""
+          Task { await viewModel.fetchProjects() }
+        } label: {
+          Image(systemName: "xmark.circle.fill")
+            .foregroundStyle(.secondary)
+        }
+      }
+    }
+    .padding(10)
+    .background(.ultraThickMaterial)
+    .clipShape(RoundedRectangle(cornerRadius: 16))
+    .padding()
+  }
+  private var statusFilter: some View {
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 12) {
+        ForEach(filterOptions) { status in
+          let isSelected = viewModel.selectedStatus == status.value
+          Button {
+            if isSelected {
+              viewModel.selectedStatus = nil
+            } else {
+              viewModel.selectedStatus = status.value
+            }
+            Task { await viewModel.fetchProjects() }
+          } label: {
+            Text(status.label)
+              .font(.subheadline)
+              .padding(.horizontal, 16)
+              .padding(.vertical, 8)
+              .background(isSelected ? Color.blue.opacity(0.15) : Color(.systemBackground))
+              .foregroundColor(isSelected ? .blue : .primary)
+              .clipShape(Capsule())
+          }
+        }
+      }
+      .padding(.horizontal)
+    }
+  }
+  private var projectList: some View {
+    ScrollView {
+      LazyVStack(spacing: 12) {
+        ForEach(viewModel.projects) { project in
+          ProjectCard(project: project,
+                      favoriteAction: {
+                        Task { await viewModel.toggleFavorite(for: project) }
+                      },
+                      deleteAction: {
+                        Task { await viewModel.delete(project: project) }
+                      })
+        }
+        if viewModel.isLoading {
+          ProgressView()
+            .padding()
+        }
+        if let error = viewModel.errorMessage {
+          Text(error)
+            .foregroundStyle(.red)
+            .padding()
+        }
+      }
+      .padding(.horizontal)
+    }
+  }
+  private struct StatusFilterOption: Identifiable {
+    let id = UUID()
+    let label: String
+    let value: String?
+  }
+  private var filterOptions: [StatusFilterOption] {
+    [
+      StatusFilterOption(label: "全部", value: nil),
+      StatusFilterOption(label: "创作中", value: "in_progress"),
+      StatusFilterOption(label: "已完成", value: "completed"),
+      StatusFilterOption(label: "归档", value: "archived")
+    ]
+  }
+}
+struct CreateProjectSheet: View {
+  @EnvironmentObject private var viewModel: ProjectsViewModel
+  @Binding var isPresented: Bool
+  var body: some View {
+    NavigationView {
+      Form {
+        Section("基本信息") {
+          TextField("项目名称", text: $viewModel.newProjectName)
+          TextField("创作灵感 (可选)", text: $viewModel.newProjectIdea)
+        }
+        if let error = viewModel.errorMessage {
+          Section {
+            Text(error)
+              .foregroundStyle(.red)
+          }
+        }
+      }
+      .navigationTitle("新建项目")
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("取消") { isPresented = false }
+        }
+        ToolbarItem(placement: .confirmationAction) {
+          Button {
+            Task {
+              await viewModel.createProject()
+              if !viewModel.isCreating {
+                isPresented = false
+              }
+            }
+          } label: {
+            if viewModel.isCreating {
+              ProgressView()
+            } else {
+              Text("创建")
+            }
+          }
+          .disabled(viewModel.newProjectName.isEmpty)
+        }
+      }
+    }
+  }
+}
+// File: Views/PaymentCenterView.swift
+import SwiftUI
+struct PaymentCenterView: View {
+  @EnvironmentObject private var viewModel: UserCenterViewModel
+  private var usageSnapshot: TokenUsage {
+    TokenUsage(promptTokens: viewModel.desiredTokens, completionTokens: 0, cachedTokens: 0)
+  }
+  var body: some View {
+    ScrollView {
+      VStack(spacing: 20) {
+        channelPicker
+        planSection
+        pointsSection
+        estimateSection
+        credentialSection
+      }
+      .padding(20)
+    }
+    .navigationTitle("支付 / 会员")
+    .task { await viewModel.refreshAll() }
+    .alert(isPresented: Binding<Bool>(get: { viewModel.errorMessage != nil }, set: { _ in viewModel.errorMessage = nil })) {
+      Alert(title: Text("提示"), message: Text(viewModel.errorMessage ?? ""), dismissButton: .default(Text("好的")))
+    }
+  }
+  private var channelPicker: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("支付渠道").font(.headline)
+      Picker("支付渠道", selection: $viewModel.selectedChannel) {
+        Text("支付宝").tag("alipay_page")
+        Text("微信扫码").tag("wechat_native")
+      }
+      .pickerStyle(.segmented)
+    }
+  }
+  private var planSection: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack {
+        Text("会员套餐").font(.headline)
+        Spacer()
+        Button("刷新") { Task { await viewModel.fetchPlans() } }
+          .font(.caption)
+      }
+      LazyVStack(spacing: 10) {
+        ForEach(viewModel.plans) { plan in
+          PaymentPlanCard(plan: plan, isSelected: viewModel.selectedPlan?.planId == plan.planId) {
+            viewModel.selectedPlan = plan
+            viewModel.selectedPointsTier = nil
+            viewModel.desiredTokens = plan.pointsBonus
+          }
+        }
+      }
+      Button {
+        Task { await viewModel.purchaseSelected() }
+      } label: {
+        Label("购买会员", systemImage: "creditcard")
+          .frame(maxWidth: .infinity)
+      }
+      .buttonStyle(.borderedProminent)
+      .disabled(viewModel.selectedPlan == nil)
+    }
+  }
+  private var pointsSection: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack {
+        Text("积分包").font(.headline)
+        Spacer()
+        Stepper("预估 Tokens: \(viewModel.desiredTokens)", value: $viewModel.desiredTokens, in: 500...200000, step: 500)
+          .labelsHidden()
+      }
+      LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+        ForEach(viewModel.pointsTiers) { tier in
+          PointsTierCard(tier: tier, isSelected: viewModel.selectedPointsTier?.tier == tier.tier) {
+            viewModel.selectedPointsTier = tier
+            viewModel.selectedPlan = nil
+            viewModel.desiredTokens = tier.points
+          }
+        }
+      }
+      Button {
+        if let tier = viewModel.selectedPointsTier {
+          Task { await viewModel.createPointsOrder(tier: tier) }
+        }
+      } label: {
+        Label("购买积分", systemImage: "cart.fill")
+          .frame(maxWidth: .infinity)
+      }
+      .buttonStyle(.borderedProminent)
+      .disabled(viewModel.selectedPointsTier == nil)
+    }
+  }
+  private var estimateSection: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      Text("成本预估").font(.headline)
+      TokenUsageStrip(usage: usageSnapshot)
+      Text("约需 ¥\(String(format: "%.2f", viewModel.desiredCostCNY))，按千 Tokens ¥0.08 计算。展示为人民币。")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+  }
+  private var credentialSection: some View {
+    Group {
+      if let credential = viewModel.lastCredential {
+        CredentialView(credential: credential)
+      }
+    }
+  }
+}
+// File: Views/Components/PointsTierCard.swift
+import SwiftUI
+struct PointsTierCard: View {
+  let tier: PaymentPointsTier
+  let isSelected: Bool
+  var onSelect: (() -> Void)?
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack {
+        Text(tier.tierLabel)
+          .font(.headline)
+        Spacer()
+        Text(tier.priceDisplayCNY)
+          .font(.subheadline)
+      }
+      Text("积分 \(tier.points) · 倍数 x\(String(format: "%.2f", tier.multiplier))")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+    .padding()
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(isSelected ? Color.blue.opacity(0.12) : Color(.secondarySystemBackground))
+    .overlay(
+      RoundedRectangle(cornerRadius: 12)
+        .stroke(isSelected ? Color.blue : Color.gray.opacity(0.2), lineWidth: 1)
+    )
+    .clipShape(RoundedRectangle(cornerRadius: 12))
+    .onTapGesture { onSelect?() }
+  }
+}
+// File: Views/Components/ProjectCard.swift
+import SwiftUI
+struct ProjectCard: View {
+  let project: Project
+  var favoriteAction: (() -> Void)?
+  var deleteAction: (() -> Void)?
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack {
+        VStack(alignment: .leading, spacing: 4) {
+          Text(project.projectName)
+            .font(.headline)
+          Text("ID: \(project.projectId)")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        Spacer()
+        Button {
+          favoriteAction?()
+        } label: {
+          Image(systemName: (project.isFavorite ?? false) ? "heart.fill" : "heart")
+            .foregroundStyle(.pink)
+        }
+        .buttonStyle(.plain)
+      }
+      HStack {
+        Text(project.statusLabel)
+          .font(.caption)
+          .padding(.horizontal, 10)
+          .padding(.vertical, 4)
+          .background(Color.blue.opacity(0.1))
+          .clipShape(Capsule())
+        if let tags = project.tags, !tags.isEmpty {
+          ForEach(tags.prefix(2), id: \.self) { tag in
+            Text(tag)
+              .font(.caption2)
+              .padding(.horizontal, 8)
+              .padding(.vertical, 4)
+              .background(Color.gray.opacity(0.15))
+              .clipShape(Capsule())
+          }
+        }
+      }
+      if let storyCore = project.storyCore, !storyCore.isEmpty {
+        Text(storyCore)
+          .font(.subheadline)
+          .lineLimit(3)
+      }
+      HStack {
+        if let updated = project.updatedAt {
+          Label(updated.formatted(date: .abbreviated, time: .shortened), systemImage: "clock")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        Spacer()
+        Button(role: .destructive) {
+          deleteAction?()
+        } label: {
+          Label("删除", systemImage: "trash")
+            .font(.caption)
+        }
+        .buttonStyle(.bordered)
+      }
+    }
+    .padding()
+    .background(Color(.systemBackground))
+    .clipShape(RoundedRectangle(cornerRadius: 20))
+    .shadow(color: .black.opacity(0.05), radius: 6, x: 0, y: 3)
+  }
+}
+// File: Views/Components/MemoryCompassPanel.swift
+import SwiftUI
+struct MemoryCompassPanel: View {
+  let compass: MemoryCompass
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack {
+        Text("记忆罗盘")
+          .font(.headline)
+        Spacer()
+        Text("项目 \(compass.projectId)")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+      if compass.anchors.isEmpty && compass.decisions.isEmpty {
+        Text("暂无记忆锚点，先生成叙事线即可沉淀上下文。")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      } else {
+        CompassAnchorsView(anchors: compass.anchors)
+        Divider()
+        VStack(alignment: .leading, spacing: 8) {
+          Text("决策记录")
+            .font(.subheadline)
+          ForEach(compass.decisions.prefix(4)) { decision in
+            HStack(alignment: .top, spacing: 8) {
+              Circle()
+                .fill(Color.blue.opacity(0.2))
+                .frame(width: 10, height: 10)
+              VStack(alignment: .leading, spacing: 4) {
+                Text(decision.cue)
+                  .font(.subheadline)
+                Text(decision.outcome)
+                  .font(.caption)
+                  .foregroundStyle(.secondary)
+                if let time = decision.happenedAt {
+                  Text(time.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                }
+              }
+              Spacer()
+              Text(String(format: "%.0f%%", decision.confidence * 100))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+          }
+        }
+      }
+    }
+    .padding()
+    .background(.ultraThinMaterial)
+    .clipShape(RoundedRectangle(cornerRadius: 18))
+  }
+}
+private struct CompassAnchorsView: View {
+  let anchors: [MemoryAnchor]
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("锚点")
+        .font(.subheadline)
+      LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+        ForEach(anchors.prefix(6)) { anchor in
+          VStack(alignment: .leading, spacing: 4) {
+            Text(anchor.focus)
+              .font(.headline)
+            Text(anchor.detail)
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .lineLimit(3)
+            HStack {
+              Spacer()
+              Text(String(format: "权重 %.1f", anchor.weight))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
+          }
+          .padding()
+          .background(Color(.secondarySystemBackground))
+          .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+      }
+    }
+  }
+}
+// File: Views/Components/NarrativeThreadCard.swift
+import SwiftUI
+struct NarrativeThreadCard: View {
+  let thread: NarrativeThread
+  let isSelected: Bool
+  var onSelect: (() -> Void)?
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack {
+        VStack(alignment: .leading, spacing: 4) {
+          Text(thread.title)
+            .font(.headline)
+          Text(thread.summary)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(3)
+        }
+        Spacer()
+        if let tension = thread.tension, !tension.isEmpty {
+          Text(tension)
+            .font(.caption2)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.orange.opacity(0.15))
+            .clipShape(Capsule())
+        }
+      }
+      HStack(spacing: 12) {
+        Label("tokens \(thread.tokensUsed ?? 0)", systemImage: "gauge.with.dots.needle.33percent")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        let characterNames = thread.characters.joined(separator: " / ")
+        if !characterNames.isEmpty {
+          Label(characterNames, systemImage: "person.3.sequence")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+        Spacer()
+        if let updated = thread.lastUpdated {
+          Text(updated.formatted(date: .abbreviated, time: .shortened))
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+      }
+    }
+    .padding()
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(isSelected ? Color.blue.opacity(0.12) : Color(.systemBackground))
+    .overlay(
+      RoundedRectangle(cornerRadius: 16)
+        .stroke(isSelected ? Color.blue : Color.gray.opacity(0.2), lineWidth: 1)
+    )
+    .clipShape(RoundedRectangle(cornerRadius: 16))
+    .contentShape(Rectangle())
+    .onTapGesture {
+      onSelect?()
+    }
+  }
+}
+// File: Views/Components/StepCard.swift
+import SwiftUI
+struct StepCard: View {
+  let step: CreationStepViewData
+  let action: () -> Void
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack {
+        VStack(alignment: .leading, spacing: 4) {
+          Text(step.kind.title)
+            .font(.headline)
+          Text(step.kind.description)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        Spacer()
+        StepStatusBadge(status: step.status)
+      }
+      if let preview = step.resultPreview, !preview.isEmpty {
+        Text(preview)
+          .font(.footnote)
+          .lineLimit(3)
+          .foregroundStyle(.secondary)
+      }
+      Button(action: action) {
+        Label("运行", systemImage: "play.fill")
+          .frame(maxWidth: .infinity)
+      }
+      .buttonStyle(.borderedProminent)
+    }
+    .padding()
+    .background(.ultraThinMaterial)
+    .clipShape(RoundedRectangle(cornerRadius: 20))
+  }
+}
+struct StepStatusBadge: View {
+  let status: StepStatus
+  var body: some View {
+    Text(status.label)
+      .font(.caption)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 4)
+      .background(backgroundColor)
+      .foregroundStyle(foregroundColor)
+      .clipShape(Capsule())
+  }
+  private var backgroundColor: Color {
+    switch status {
+    case .idle:
+      return Color.gray.opacity(0.15)
+    case .running:
+      return Color.yellow.opacity(0.2)
+    case .completed:
+      return Color.green.opacity(0.2)
+    case .failed:
+      return Color.red.opacity(0.2)
+    }
+  }
+  private var foregroundColor: Color {
+    switch status {
+    case .idle:
+      return .gray
+    case .running:
+      return .orange
+    case .completed:
+      return .green
+    case .failed:
+      return .red
+    }
+  }
+}
+// File: Views/Components/TokenUsageStrip.swift
+import SwiftUI
+struct TokenUsageStrip: View {
+  let usage: TokenUsage
+  var body: some View {
+    HStack {
+      VStack(alignment: .leading, spacing: 4) {
+        Text("本地 Token 估算")
+          .font(.subheadline)
+          .foregroundStyle(.secondary)
+        Text("\(usage.totalTokens) tokens · 约 ¥\(String(format: "%.2f", usage.costCNY))")
+          .font(.headline)
+      }
+      Spacer()
+      VStack(alignment: .trailing, spacing: 4) {
+        Label("\(usage.promptTokens)", systemImage: "text.alignleft")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        Label("\(usage.completionTokens)", systemImage: "sparkles")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+    }
+    .padding()
+    .background(Color(.secondarySystemBackground))
+    .clipShape(RoundedRectangle(cornerRadius: 14))
+  }
+}
+// File: Views/Components/PaymentPlanCard.swift
+import SwiftUI
+struct PaymentPlanCard: View {
+  let plan: PaymentPlan
+  let isSelected: Bool
+  var onSelect: (() -> Void)?
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack {
+        VStack(alignment: .leading, spacing: 4) {
+          Text(plan.name)
+            .font(.headline)
+          Text(plan.tierLabel)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        Spacer()
+        Text(plan.displayAmountCNY)
+          .font(.title3)
+          .bold()
+      }
+      Text(plan.description)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      if !plan.features.isEmpty {
+        LazyVStack(alignment: .leading, spacing: 4) {
+          ForEach(plan.features.prefix(3), id: \.self) { feature in
+            Label(feature, systemImage: "checkmark.seal")
+              .font(.caption)
+              .foregroundStyle(.green)
+          }
+        }
+      }
+      HStack {
+        Label("送积分 \(plan.pointsBonus)", systemImage: "gift.fill")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        Spacer()
+        if plan.popular {
+          Text(plan.badge ?? "热门")
+            .font(.caption2)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.orange.opacity(0.15))
+            .clipShape(Capsule())
+        }
+      }
+    }
+    .padding()
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(isSelected ? Color.green.opacity(0.12) : Color(.systemBackground))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14)
+        .stroke(isSelected ? Color.green : Color.gray.opacity(0.2), lineWidth: 1)
+    )
+    .clipShape(RoundedRectangle(cornerRadius: 14))
+    .onTapGesture {
+      onSelect?()
+    }
+  }
+}
+// File: Views/UserCenterView.swift
+import SwiftUI
+struct UserCenterView: View {
+  @EnvironmentObject private var viewModel: UserCenterViewModel
+  var body: some View {
+    ScrollView {
+      VStack(spacing: 20) {
+        pointsCard
+        transactionsSection
+        rechargeSection
+      }
+      .padding(20)
+    }
+    .task { await viewModel.refreshAll() }
+    .navigationTitle("用户中心")
+    .alert(isPresented: Binding<Bool>(get: { viewModel.errorMessage != nil }, set: { _ in viewModel.errorMessage = nil })) {
+      Alert(title: Text("提示"), message: Text(viewModel.errorMessage ?? ""), dismissButton: .default(Text("好的")))
+    }
+  }
+  private var pointsCard: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text("积分概览").font(.headline)
+      if let points = viewModel.points {
+        HStack {
+          VStack(alignment: .leading) {
+            Text("可用积分")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+            Text("\(points.usablePoints)")
+              .font(.title)
+              .bold()
+          }
+          Spacer()
+          VStack(alignment: .leading) {
+            Text("等级 \(points.levelName)")
+            ProgressView(value: points.levelProgress, total: 1)
+          }
+        }
+      } else {
+        ProgressView()
+      }
+    }
+    .padding()
+    .background(.ultraThinMaterial)
+    .clipShape(RoundedRectangle(cornerRadius: 16))
+  }
+  private var transactionsSection: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack {
+        Text("积分流水").font(.headline)
+        Spacer()
+        Button("刷新") { Task { await viewModel.fetchTransactions() } }
+      }
+      ForEach(viewModel.transactions.prefix(5)) { tx in
+        HStack {
+          VStack(alignment: .leading) {
+            Text("\(tx.reason) · \(tx.status)").font(.subheadline)
+            Text(tx.description).font(.caption).foregroundStyle(.secondary)
+          }
+          Spacer()
+          Text("\(tx.amount > 0 ? "+" : "")\(tx.amount)")
+            .foregroundColor(tx.amount >= 0 ? .green : .red)
+        }
+        .padding(.vertical, 6)
+      }
+    }
+    .padding()
+    .background(Color(uiColor: .systemBackground))
+    .clipShape(RoundedRectangle(cornerRadius: 16))
+  }
+  private var rechargeSection: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text("充值 / 会员").font(.headline)
+      NavigationLink {
+        PaymentCenterView()
+      } label: {
+        Label("打开支付页面", systemImage: "creditcard.fill")
+          .frame(maxWidth: .infinity)
+      }
+      .buttonStyle(.borderedProminent)
+      if let credential = viewModel.lastCredential {
+        CredentialView(credential: credential)
+      }
+    }
+    .padding()
+    .background(Color(uiColor: .systemBackground))
+    .clipShape(RoundedRectangle(cornerRadius: 16))
+  }
+}
+struct CredentialView: View {
+  let credential: PaymentCredential
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("支付凭证").font(.headline)
+      Text(credential.display)
+      if let url = credential.alipayPage?.pageUrl, let link = URL(string: url) {
+        Link("打开支付宝页面", destination: link)
+      }
+      if let code = credential.wechatNative?.codeUrl,
+         let imageURL = URL(string: "https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=\(code)") {
+        AsyncImage(url: imageURL) { phase in
+          switch phase {
+          case .empty: ProgressView()
+          case .failure: Text(code).font(.caption)
+          case .success(let img): img.resizable().frame(width: 160, height: 160)
+          @unknown default: EmptyView()
+          }
+        }
+      }
+    }
+    .padding()
+    .background(.ultraThinMaterial)
+    .clipShape(RoundedRectangle(cornerRadius: 12))
+  }
+}
+// File: Views/CreationWorkflowView.swift
+import SwiftUI
+struct CreationWorkflowView: View {
+  @EnvironmentObject private var viewModel: CreationViewModel
+  var body: some View {
+    NavigationView {
+      ScrollView {
+        VStack(spacing: 24) {
+          projectBindingSection
+          stepsSection
+          outputSection
+        }
+        .padding()
+      }
+      .navigationTitle("分步创作")
+      .toolbar {
+        ToolbarItem(placement: .navigationBarTrailing) {
+          Button {
+            if !viewModel.projectId.isEmpty {
+              Task { await viewModel.attachProject(id: viewModel.projectId) }
+            }
+          } label: {
+            Image(systemName: "arrow.triangle.2.circlepath")
+          }
+        }
+      }
+    }
+  }
+  private var projectBindingSection: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text("绑定创作项目")
+        .font(.headline)
+      TextField("项目 ID (数字)", text: $viewModel.projectId)
+        .keyboardType(.numberPad)
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+      TextField("项目名称", text: $viewModel.projectName)
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+      TextField("创作灵感", text: $viewModel.firstIdea, axis: .vertical)
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+      if let error = viewModel.errorMessage {
+        Text(error)
+          .foregroundStyle(.red)
+          .font(.caption)
+      }
+      HStack {
+        Button {
+          Task { await viewModel.ensureProjectIfNeeded() }
+        } label: {
+          Label("新建/绑定", systemImage: "link")
+        }
+        .buttonStyle(.borderedProminent)
+        Button {
+          if !viewModel.projectId.isEmpty {
+            Task { await viewModel.attachProject(id: viewModel.projectId) }
+          }
+        } label: {
+          Label("同步", systemImage: "icloud.and.arrow.down")
+        }
+        .buttonStyle(.bordered)
+      }
+    }
+    .padding()
+    .background(.ultraThinMaterial)
+    .clipShape(RoundedRectangle(cornerRadius: 20))
+  }
+  private var stepsSection: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      Text("创作步骤")
+        .font(.headline)
+      ForEach(viewModel.steps) { step in
+        StepCard(step: step) {
+          Task { await viewModel.run(step: step.kind) }
+        }
+      }
+    }
+  }
+  private var outputSection: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      if !viewModel.protagonist.isEmpty {
+        OutputCard(title: "主角人物", content: viewModel.protagonist)
+      }
+      if !viewModel.supportingCharacters.isEmpty {
+        OutputCard(title: "配角关系", content: formattedSupporting())
+      }
+      if !viewModel.plotSequence.isEmpty {
+        OutputCard(title: "情节序列", content: viewModel.plotSequence)
+      }
+      if !viewModel.sceneBeats.isEmpty {
+        OutputCard(title: "场景节拍", content: viewModel.sceneBeats.map { "• \($0.title): \($0.summary)" }.joined(separator: "\n"))
+      }
+      if !viewModel.scriptContent.isEmpty {
+        OutputCard(title: "正文输出", content: viewModel.scriptContent)
+      }
+    }
+  }
+  private func formattedSupporting() -> String {
+    viewModel.supportingCharacters
+      .map { character in
+        let relation = (character.relationship ?? "").trimmingCharacters(in: .whitespaces)
+        let relationText = relation.isEmpty ? "" : "（\(relation)）"
+        return "• \(character.name)：\(character.description)\(relationText)"
+      }
+      .joined(separator: "\n")
+  }
+}
+struct OutputCard: View {
+  let title: String
+  let content: String
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack {
+        Text(title)
+          .font(.headline)
+        Spacer()
+        Image(systemName: "doc.on.doc")
+          .foregroundStyle(.secondary)
+      }
+      Text(content)
+        .font(.body)
+        .lineLimit(nil)
+    }
+    .padding()
+    .background(.thickMaterial)
+    .clipShape(RoundedRectangle(cornerRadius: 20))
+  }
+}
+// File: Views/HomeView.swift
+import SwiftUI
+struct HomeView: View {
+  @EnvironmentObject private var homeViewModel: HomeViewModel
+  @EnvironmentObject private var creationViewModel: CreationViewModel
+  var body: some View {
+    NavigationView {
+      ScrollView {
+        VStack(spacing: 24) {
+          header
+          statsSection
+          quickActionSection
+          recentProjectsSection
+        }
+        .padding()
+      }
+      .navigationTitle("首页")
+      .toolbar {
+        ToolbarItem(placement: .navigationBarTrailing) {
+          Button {
+            Task { await homeViewModel.load() }
+          } label: {
+            Image(systemName: "arrow.clockwise")
+          }
+        }
+      }
+    }
+  }
+  private var header: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("欢迎回来")
+        .font(.callout)
+        .foregroundStyle(.secondary)
+      Text("准备好继续创作了吗？")
+        .font(.title2)
+        .bold()
+      Button {
+        Task { await creationViewModel.run(step: .inspiration) }
+      } label: {
+        Label("开始新的灵感", systemImage: "sparkles")
+          .padding()
+          .frame(maxWidth: .infinity)
+          .background(.purple.opacity(0.15))
+          .foregroundStyle(.purple)
+          .clipShape(RoundedRectangle(cornerRadius: 16))
+      }
+    }
+  }
+  private var statsSection: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text("数据概览")
+        .font(.headline)
+      HStack(spacing: 12) {
+        StatCard(title: "项目总数", value: "\(homeViewModel.stats.totalProjects)", trend: "+")
+        StatCard(title: "进行中", value: "\(homeViewModel.stats.activeProjects)", trend: "")
+      }
+      HStack(spacing: 12) {
+        StatCard(title: "已完成", value: "\(homeViewModel.stats.completedProjects)", trend: "")
+        StatCard(title: "字数", value: "\(homeViewModel.stats.totalWordCount)", trend: "字")
+      }
+    }
+  }
+  private var quickActionSection: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text("快速操作")
+        .font(.headline)
+      LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+        QuickActionButton(icon: "pencil.and.outline", title: "故事核心") {
+          Task { await creationViewModel.run(step: .storyCore) }
+        }
+        QuickActionButton(icon: "person.2", title: "角色设计") {
+          Task { await creationViewModel.run(step: .protagonist) }
+        }
+        QuickActionButton(icon: "square.grid.2x2", title: "情节序列") {
+          Task { await creationViewModel.run(step: .plotSequence) }
+        }
+        QuickActionButton(icon: "doc.text", title: "生成正文") {
+          Task { await creationViewModel.run(step: .writing) }
+        }
+      }
+    }
+  }
+  private var recentProjectsSection: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack {
+        Text("最新项目")
+          .font(.headline)
+        Spacer()
+      }
+      ForEach(homeViewModel.projects.prefix(4)) { project in
+        ProjectListRow(project: project)
+          .padding(16)
+          .background(.background)
+          .clipShape(RoundedRectangle(cornerRadius: 16))
+          .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 2)
+      }
+    }
+  }
+}
+struct StatCard: View {
+  let title: String
+  let value: String
+  let trend: String
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text(title)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      Text(value)
+        .font(.title2)
+        .bold()
+      Text(trend)
+        .font(.caption2)
+        .foregroundStyle(.green)
+    }
+    .frame(maxWidth: .infinity)
+    .padding()
+    .background(.white)
+    .clipShape(RoundedRectangle(cornerRadius: 16))
+    .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 2)
+  }
+}
+struct QuickActionButton: View {
+  let icon: String
+  let title: String
+  let action: () -> Void
+  var body: some View {
+    Button(action: action) {
+      VStack(alignment: .leading, spacing: 8) {
+        Image(systemName: icon)
+          .font(.title2)
+          .foregroundStyle(.purple)
+        Text(title)
+          .font(.headline)
+        Text("立即生成")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding()
+      .background(.purple.opacity(0.08))
+      .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+    .buttonStyle(.plain)
+  }
+}
+struct ProjectListRow: View {
+  let project: Project
+  var body: some View {
+    HStack {
+      VStack(alignment: .leading, spacing: 4) {
+        Text(project.projectName)
+          .font(.headline)
+        Text(project.statusLabel)
+          .font(.caption)
+          .padding(.horizontal, 8)
+          .padding(.vertical, 4)
+          .background(.blue.opacity(0.12))
+          .clipShape(Capsule())
+      }
+      Spacer()
+      if let updated = project.updatedAt {
+        Text(updated.formatted(date: .abbreviated, time: .shortened))
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+    }
+  }
+}
+// File: Views/LoginView.swift
+import SwiftUI
+struct LoginView: View {
+  @EnvironmentObject private var authViewModel: AuthViewModel
+  @State private var isRegisterMode = false
+  var body: some View {
+    VStack(spacing: 32) {
+      VStack(spacing: 8) {
+        Image(systemName: "sparkles")
+          .font(.system(size: 48))
+          .foregroundStyle(.purple)
+        Text("创作工作台")
+          .font(.largeTitle)
+          .bold()
+        Text("与 Web 前端一致的剧情创作流程")
+          .foregroundStyle(.secondary)
+      }
+      Picker("模式", selection: $isRegisterMode) {
+        Text("登录").tag(false)
+        Text("注册").tag(true)
+      }
+      .pickerStyle(.segmented)
+      VStack(spacing: 16) {
+        TextField("用户名", text: $authViewModel.username)
+          .textContentType(.username)
+          .autocapitalization(.none)
+          .disableAutocorrection(true)
+          .padding()
+          .background(.gray.opacity(0.1))
+          .clipShape(RoundedRectangle(cornerRadius: 12))
+        if isRegisterMode {
+          TextField("邮箱", text: $authViewModel.email)
+            .textContentType(.emailAddress)
+            .keyboardType(.emailAddress)
+            .autocapitalization(.none)
+            .padding()
+            .background(.gray.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+          TextField("昵称", text: $authViewModel.nickname)
+            .padding()
+            .background(.gray.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+        SecureField("密码", text: $authViewModel.password)
+          .textContentType(.password)
+          .padding()
+          .background(.gray.opacity(0.1))
+          .clipShape(RoundedRectangle(cornerRadius: 12))
+      }
+      if let error = authViewModel.errorMessage {
+        Text(error)
+          .foregroundStyle(.red)
+          .font(.footnote)
+      }
+      Button {
+        Task {
+          if isRegisterMode {
+            await authViewModel.registerAccount()
+          } else {
+            await authViewModel.login()
+          }
+        }
+      } label: {
+        if authViewModel.isLoading {
+          ProgressView()
+            .progressViewStyle(.circular)
+            .tint(.white)
+        } else {
+          Text(isRegisterMode ? "注册并登录" : "登录")
+            .fontWeight(.semibold)
+        }
+      }
+      .frame(maxWidth: .infinity)
+      .padding()
+      .background(.purple)
+      .foregroundStyle(.white)
+      .clipShape(RoundedRectangle(cornerRadius: 12))
+      .disabled(authViewModel.isLoading)
+      Button("已有账号？切换登录") {
+        isRegisterMode.toggle()
+      }
+      .font(.footnote)
+      .foregroundColor(.secondary)
+      Spacer()
+    }
+    .padding(32)
+  }
+}
+// File: Views/NovelCreationApp.swift
+import SwiftUI
+@main
+struct NovelCreationApp: App {
+  @StateObject private var authViewModel = AuthViewModel()
+  @StateObject private var homeViewModel = HomeViewModel()
+  @StateObject private var projectsViewModel = ProjectsViewModel()
+  @StateObject private var creationViewModel = CreationViewModel()
+  @StateObject private var narrativeViewModel = NarrativeViewModel()
+  @StateObject private var userCenterViewModel = UserCenterViewModel()
+  var body: some Scene {
+    WindowGroup {
+      RootView()
+        .environmentObject(authViewModel)
+        .environmentObject(homeViewModel)
+        .environmentObject(projectsViewModel)
+        .environmentObject(creationViewModel)
+        .environmentObject(narrativeViewModel)
+        .environmentObject(userCenterViewModel)
+        .task {
+          await authViewModel.bootstrapSession()
+        }
+    }
+  }
+}
+struct RootView: View {
+  @EnvironmentObject private var authViewModel: AuthViewModel
+  var body: some View {
+    if authViewModel.isAuthenticated {
+      MainTabView()
+    } else {
+      LoginView()
+    }
+  }
+}
+// File: Views/MainTabView.swift
+import SwiftUI
+struct MainTabView: View {
+  @EnvironmentObject private var homeViewModel: HomeViewModel
+  @EnvironmentObject private var projectsViewModel: ProjectsViewModel
+  @EnvironmentObject private var creationViewModel: CreationViewModel
+  @EnvironmentObject private var narrativeViewModel: NarrativeViewModel
+  @EnvironmentObject private var userCenterViewModel: UserCenterViewModel
+  var body: some View {
+    TabView {
+      HomeView()
+        .tabItem {
+          Label("首页", systemImage: "house.fill")
+        }
+      ProjectsView()
+        .tabItem {
+          Label("项目", systemImage: "books.vertical.fill")
+        }
+      CreationWorkflowView()
+        .tabItem {
+          Label("创作", systemImage: "sparkles")
+        }
+      NarrativeLabView()
+        .tabItem {
+          Label("叙事", systemImage: "map")
+        }
+      PaymentCenterView()
+        .tabItem {
+          Label("会员", systemImage: "creditcard.fill")
+        }
+      ProfileView()
+        .tabItem {
+          Label("我的", systemImage: "person.crop.circle")
+        }
+    }
+    .task {
+      await homeViewModel.load()
+      await projectsViewModel.load()
+      if !creationViewModel.projectId.isEmpty {
+        await creationViewModel.attachProject(id: creationViewModel.projectId)
+      }
+    }
+  }
+}
+struct ProfileView: View {
+  @EnvironmentObject private var authViewModel: AuthViewModel
+  @EnvironmentObject private var creationViewModel: CreationViewModel
+  @EnvironmentObject private var narrativeViewModel: NarrativeViewModel
+  var body: some View {
+    NavigationView {
+      List {
+        Section("账户") {
+          HStack {
+            VStack(alignment: .leading) {
+              Text(authViewModel.user?.displayName ?? "未知用户")
+                .font(.headline)
+              Text(authViewModel.user?.email ?? "--")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if let status = authViewModel.user?.status {
+              Text(status)
+                .font(.caption)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(.blue.opacity(0.1))
+                .clipShape(Capsule())
+            }
+          }
+        }
+        Section("创作项目") {
+          if creationViewModel.projectId.isEmpty {
+            Text("尚未绑定项目")
+              .foregroundStyle(.secondary)
+          } else {
+            VStack(alignment: .leading, spacing: 4) {
+              Text(creationViewModel.projectName.isEmpty ? "项目 #\(creationViewModel.projectId)" : creationViewModel.projectName)
+              Text("ID: \(creationViewModel.projectId)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+          }
+        }
+        Section("用户中心") {
+          NavigationLink(destination: UserCenterView()) {
+            Label("积分 / 充值", systemImage: "creditcard")
+          }
+          NavigationLink(destination: NarrativeLabView()) {
+            Label("多线叙事 / 记忆罗盘", systemImage: "map")
+          }
+        }
+        Section {
+          Button(role: .destructive) {
+            authViewModel.logout()
+          } label: {
+            Label("退出登录", systemImage: "rectangle.portrait.and.arrow.right")
+          }
+        }
+      }
+      .navigationTitle("个人中心")
+    }
+  }
+}
+// File: Models/NarrativeModels.swift
+import Foundation
+struct NarrativeThread: Decodable, Identifiable {
+  let threadId: String
+  let title: String
+  let summary: String
+  let tension: String?
+  let characters: [String]
+  let tokensUsed: Int?
+  let lastUpdated: Date?
+  var id: String { threadId }
+}
+struct NarrativeThreadListResponse: Decodable {
+  let threads: [NarrativeThread]
+}
+struct NarrativeBeat: Decodable, Identifiable {
+  let beatId: String
+  let content: String
+  let prompt: String?
+  let tokensUsed: Int?
+  let orderIndex: Int
+  var id: String { beatId }
+}
+struct NarrativeBeatListResponse: Decodable {
+  let beats: [NarrativeBeat]
+}
+struct MemoryCompass: Decodable {
+  let compassId: String
+  let projectId: String
+  let anchors: [MemoryAnchor]
+  let decisions: [MemoryDecision]
+}
+struct MemoryAnchor: Decodable, Identifiable {
+  let anchorId: String
+  let focus: String
+  let detail: String
+  let weight: Double
+  let updatedAt: Date?
+  var id: String { anchorId }
+}
+struct MemoryDecision: Decodable, Identifiable {
+  let decisionId: String
+  let cue: String
+  let outcome: String
+  let confidence: Double
+  let happenedAt: Date?
+  var id: String { decisionId }
+}
+struct TokenUsage: Equatable {
+  var promptTokens: Int = 0
+  var completionTokens: Int = 0
+  var cachedTokens: Int = 0
+  var totalTokens: Int {
+    promptTokens + completionTokens - cachedTokens
+  }
+  var costCNY: Double {
+    TokenEstimator.costInCNY(forTokens: totalTokens)
+  }
+}
+enum TokenEstimator {
+  private static let charactersPerToken: Double = 1.2
+  private static let pricePerThousandTokensCNY: Double = 0.08
+  static func estimateTokens(for text: String) -> Int {
+    let count = text.trimmingCharacters(in: .whitespacesAndNewlines).count
+    guard count > 0 else { return 0 }
+    return Int((Double(count) / charactersPerToken).rounded(.up))
+  }
+  static func costInCNY(forTokens tokens: Int) -> Double {
+    guard tokens > 0 else { return 0 }
+    let units = Double(tokens) / 1000.0
+    return (units * pricePerThousandTokensCNY * 100).rounded(.toNearestOrAwayFromZero) / 100
+  }
+}
+// File: Models/AuthModels.swift
+import Foundation
+struct LoginRequest: Encodable {
+  let username: String
+  let password: String
+}
+struct LoginResult: Decodable {
+  let token: String
+  let expiresAt: Date
+  let user: User
+}
+struct User: Decodable, Identifiable {
+  let id: Int
+  let username: String
+  let email: String?
+  let role: String?
+  let nickname: String?
+  let avatar: String?
+  let phone: String?
+  let isApproved: Bool?
+  let status: String?
+  let createdAt: Date?
+  let updatedAt: Date?
+  var displayName: String {
+    nickname ?? username
+  }
+}
+// File: Models/CreationModels.swift
+import Foundation
+struct BrainstormGenerateRequest: Encodable {
+  let firstIdea: String
+  let numIdeas: Int
+  let creativeStyle: [String]
+  let conceptType: String?
+  let conceptDepth: String?
+  let plotType: String?
+  let projectId: String?
+}
+struct BrainstormGenerateResponse: Decodable {
+  let success: Bool?
+  let message: String?
+  let data: BrainstormPayload?
+}
+struct BrainstormPayload: Decodable {
+  let brainstormIdeas: [String]?
+  let session: BrainstormSession?
+}
+struct BrainstormSession: Decodable, Identifiable {
+  let sessionId: String
+  let projectId: String?
+  let createdAt: Date?
+  let ideas: [String]?
+  var id: String { sessionId }
+}
+struct StoryCoreResponse: Decodable {
+  let content: String?
+  let success: Bool
+  let message: String?
+}
+struct StoryCoreAdvanceRequest: Encodable {
+  let projectId: String
+  let storyCore: String
+  let leadingQuantity: Int?
+}
+struct ProtagonistResponse: Decodable {
+  let success: Bool
+  let message: String?
+  let data: ProtagonistPayload?
+}
+struct ProtagonistPayload: Decodable {
+  let leadingBrief: String?
+}
+struct SupportingCharactersResponse: Decodable {
+  let success: Bool
+  let message: String?
+  let supportingCharacters: [SupportingCharacterDTO]?
+}
+struct SupportingCharacterDTO: Codable, Identifiable {
+  let id: String?
+  let name: String
+  let description: String
+  let relationship: String?
+  let orderIndex: Int?
+  var displayId: String { id ?? UUID().uuidString }
+  var identifier: String { id ?? name }
+  var stableId: String { id ?? UUID().uuidString }
+  var actualId: String { id ?? stableId }
+}
+struct GenerateResponse: Decodable {
+  let success: Bool
+  let message: String?
+  let content: String?
+  let data: GenerateDataWrapper?
+}
+struct GenerateDataWrapper: Decodable {
+  let projectId: String?
+  let sequence: String?
+}
+struct PlotSequenceResponse: Decodable {
+  let data: PlotSequenceData?
+  let message: String?
+}
+struct PlotSequenceData: Decodable {
+  let projectId: String?
+  let sequence: String?
+}
+struct SequenceBeatResponse: Decodable {
+  let success: Bool
+  let message: String?
+  let data: SequenceBeatData?
+}
+struct SequenceBeatData: Decodable {
+  let sequenceId: String
+  let sceneBeats: [SequenceBeatItem]
+}
+struct SequenceBeatItem: Codable, Identifiable {
+  let id: String
+  let title: String
+  let summary: String
+  let raw: String
+  init(id: String, title: String, summary: String, raw: String) {
+    self.id = id
+    self.title = title
+    self.summary = summary
+    self.raw = raw
+  }
+  init(from decoder: Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    if let value = try? container.decode(String.self) {
+      id = UUID().uuidString
+      title = value.components(separatedBy: "\n").first ?? "Scene"
+      summary = value
+      raw = value
+      return
+    }
+    if let value = try? container.decode([String: String].self) {
+      raw = value.description
+      title = value["title"] ?? value["scene"] ?? "Scene"
+      summary = value["summary"] ?? value["content"] ?? raw
+      id = value["id"] ?? UUID().uuidString
+      return
+    }
+    throw DecodingError.dataCorruptedError(in: container, debugDescription: "无法解析场景节拍")
+  }
+}
+struct SequenceScriptResponse: Decodable {
+  let success: Bool
+  let message: String?
+  let data: SequenceScriptData?
+}
+struct SequenceScriptData: Decodable {
+  let generatedContent: String?
+}
+// File: Models/Project.swift
+import Foundation
+struct Project: Decodable, Identifiable {
+  let projectId: String
+  let projectName: String
+  let status: String
+  let tags: [String]?
+  let isFavorite: Bool?
+  let createdAt: Date?
+  let updatedAt: Date?
+  let storyCore: String?
+  let leadingBrief: String?
+  let firstIdea: String?
+  let brainstormIdeas: [String]?
+  let metadata: ProjectMetadata?
+  var id: String { projectId }
+  var statusLabel: String {
+    switch status {
+    case "created": return "已创建"
+    case "in_progress": return "创作中"
+    case "completed": return "已完成"
+    case "archived": return "已归档"
+    default: return status
+    }
+  }
+}
+struct ProjectMetadata: Decodable {
+  let wordCount: Int?
+  let chapterCount: Int?
+  let characterCount: Int?
+}
+struct ProjectsResponse: Decodable {
+  let projects: [Project]
+  let total: Int
+  let page: Int
+  let limit: Int
+}
+struct ProjectsListPayload: Decodable {
+  let success: Bool?
+  let message: String?
+  let data: ProjectsDataPayload?
+}
+struct ProjectsDataPayload: Decodable {
+  let projects: [Project]
+  let pagination: Pagination?
+  let total: Int?
+  let page: Int?
+  let limit: Int?
+}
+// File: Models/UserCenterModels.swift
+import Foundation
+struct RegisterRequest: Encodable {
+  let username: String
+  let email: String
+  let password: String
+  let nickname: String?
+}
+struct PointsBalance: Decodable {
+  let userId: String
+  let totalPoints: Int
+  let usablePoints: Int
+  let frozenPoints: Int
+  let lifetimeEarned: Int
+  let lifetimeSpent: Int
+  let level: Int
+  let levelName: String
+  let nextLevelPoints: Int
+  let levelProgress: Double
+  let lastUpdated: Date
+}
+struct PointsTransaction: Decodable, Identifiable {
+  let id: String
+  let userId: String
+  let type: String
+  let amount: Int
+  let reason: String
+  let status: String
+  let description: String
+  let createdAt: Date
+}
+struct PaymentPlan: Decodable, Identifiable {
+  let planId: String
+  let name: String
+  let tier: String
+  let tierLabel: String
+  let description: String
+  let durationDays: Int
+  let pointsBonus: Int
+  let amountFormatted: String
+  let currency: String
+  let popular: Bool
+  let badge: String?
+  let features: [String]
+  var id: String { planId }
+  var displayAmountCNY: String {
+    if amountFormatted.contains("¥") || amountFormatted.contains("CNY") {
+      return amountFormatted.replacingOccurrences(of: "CNY", with: "¥")
+    }
+    return "¥\(amountFormatted)"
+  }
+}
+struct PaymentPointsTier: Decodable, Identifiable {
+  let tier: String
+  let tierLabel: String
+  let points: Int
+  let priceLabel: String
+  let multiplier: Double
+  var id: String { tier }
+  var priceDisplayCNY: String {
+    if priceLabel.contains("¥") || priceLabel.contains("CNY") {
+      return priceLabel.replacingOccurrences(of: "CNY", with: "¥")
+    }
+    return "¥\(priceLabel)"
+  }
+}
+struct PaymentPlanListResponseDTO: Decodable {
+  let plans: [PlanDTO]
+  let pointsTiers: [TierDTO]
+  struct PlanDTO: Decodable {
+    let planId: String
+    let name: String
+    let tier: String
+    let tierLabel: String
+    let description: String
+    let durationDays: Int
+    let pointsBonus: Int
+    let price: PriceDTO
+    let popular: Bool
+    let badge: String?
+    let features: [String]?
+  }
+  struct TierDTO: Decodable {
+    let tier: String
+    let tierLabel: String
+    let points: Int
+    let priceLabel: String
+    let multiplier: Double
+  }
+  struct PriceDTO: Decodable {
+    let amountFormatted: String
+    let currency: String
+  }
+}
+struct PaymentOrderView: Decodable {
+  let orderNo: String
+  let planName: String
+  let channel: String
+  let status: String
+  let pointsBonus: Int
+  let amountFormatted: String
+}
+struct PaymentCredential: Decodable {
+  let channel: String
+  let display: String
+  let alipayPage: AlipayPageCredential?
+  let wechatNative: WechatNativeCredential?
+  struct AlipayPageCredential: Decodable {
+    let pageUrl: String
+  }
+  struct WechatNativeCredential: Decodable {
+    let codeUrl: String
+  }
+}
+struct CreatePaymentOrderResponse: Decodable {
+  let order: PaymentOrderView
+  let credential: PaymentCredential
+}
+struct PointsTransactionsResponse: Decodable {
+  let transactions: [PointsTransaction]
+  let total: Int
+}
+// File: Models/CommonModels.swift
+import Foundation
+struct APIEnvelope<T: Decodable>: Decodable {
+  let success: Bool?
+  let message: String?
+  let data: T?
+  let code: Int?
+}
+struct PaginatedResponse<T: Decodable>: Decodable {
+  let data: T
+  let pagination: Pagination?
+  let total: Int?
+  let page: Int?
+  let limit: Int?
+}
+struct Pagination: Decodable {
+  let page: Int
+  let limit: Int
+  let total: Int
+  let totalPages: Int?
+}
+// File: Networking/TokenStore.swift
+import Foundation
+import Security
+final class AuthTokenStore {
+  static let shared = AuthTokenStore()
+  private let service = "com.buka.novelcreation"
+  private let account = "auth_token"
+  func save(token: String) {
+    let data = Data(token.utf8)
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: service,
+      kSecAttrAccount as String: account
+    ]
+    SecItemDelete(query as CFDictionary)
+    let attributes: [String: Any] = query.merging([
+      kSecValueData as String: data,
+      kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
+    ]) { current, _ in current }
+    SecItemAdd(attributes as CFDictionary, nil)
+  }
+  func token() -> String? {
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: service,
+      kSecAttrAccount as String: account,
+      kSecReturnData as String: true,
+      kSecMatchLimit as String: kSecMatchLimitOne
+    ]
+    var item: CFTypeRef?
+    let status = SecItemCopyMatching(query as CFDictionary, &item)
+    guard status == errSecSuccess, let data = item as? Data else {
+      return nil
+    }
+    return String(data: data, encoding: .utf8)
+  }
+  func clear() {
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: service,
+      kSecAttrAccount as String: account
+    ]
+    SecItemDelete(query as CFDictionary)
+  }
+}
+// File: Networking/APIClient.swift
+import Foundation
+enum HTTPMethod: String {
+  case get = "GET"
+  case post = "POST"
+  case put = "PUT"
+  case delete = "DELETE"
+  case patch = "PATCH"
+}
+struct Endpoint {
+  let path: String
+  var method: HTTPMethod = .get
+  var queryItems: [URLQueryItem] = []
+  var headers: [String: String] = [:]
+  var body: Data? = nil
+  init(path: String,
+       method: HTTPMethod = .get,
+       queryItems: [URLQueryItem] = [],
+       headers: [String: String] = [:],
+       body: Data? = nil) {
+    self.path = path
+    self.method = method
+    self.queryItems = queryItems
+    self.headers = headers
+    self.body = body
+  }
+}
+struct APIErrorEnvelope: Decodable {
+  let success: Bool?
+  let code: Int?
+  let message: String?
+  let error: APIErrorDetail?
+  let data: APIErrorDataWrapper?
+}
+struct APIErrorDetail: Decodable {
+  let message: String?
+  let code: String?
+}
+struct APIErrorDataWrapper: Decodable {
+  let error: APIErrorDetail?
+}
+enum APIClientError: Error, LocalizedError {
+  case invalidURL
+  case invalidResponse
+  case http(Int, String)
+  case decoding(String)
+  var errorDescription: String? {
+    switch self {
+    case .invalidURL:
+      return "无效的请求地址"
+    case .invalidResponse:
+      return "服务器返回异常"
+    case .http(let code, let message):
+      return "请求失败(\(code))：\(message)"
+    case .decoding(let message):
+      return "解析数据失败：\(message)"
+    }
+  }
+}
+final class APIClient {
+  static let shared = APIClient()
+  private let session: URLSession
+  private let config: AppConfig
+  private let tokenStore: AuthTokenStore
+  private let decoder: JSONDecoder
+  init(session: URLSession = .shared,
+       config: AppConfig = .shared,
+       tokenStore: AuthTokenStore = .shared) {
+    self.session = session
+    self.config = config
+    self.tokenStore = tokenStore
+    decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    decoder.dateDecodingStrategy = .iso8601
+  }
+  func send<T: Decodable>(_ endpoint: Endpoint,
+                          decodeTo type: T.Type = T.self) async throws -> T {
+    guard var components = URLComponents(url: config.apiBaseURL, resolvingAgainstBaseURL: false) else {
+      throw APIClientError.invalidURL
+    }
+    components.path = config.apiBaseURL.path + endpoint.path
+    if !endpoint.queryItems.isEmpty {
+      components.queryItems = endpoint.queryItems
+    }
+    guard let url = components.url else {
+      throw APIClientError.invalidURL
+    }
+    var request = URLRequest(url: url)
+    request.httpMethod = endpoint.method.rawValue
+    request.timeoutInterval = config.timeoutSeconds
+    request.cachePolicy = .reloadIgnoringLocalCacheData
+    var headers = endpoint.headers
+    if headers["Content-Type"] == nil {
+      headers["Content-Type"] = "application/json"
+    }
+    headers["Accept"] = "application/json"
+    if let token = tokenStore.token() {
+      headers["Authorization"] = "Bearer \(token)"
+    }
+    headers.forEach { key, value in
+      request.setValue(value, forHTTPHeaderField: key)
+    }
+    request.httpBody = endpoint.body
+    let (data, response) = try await session.data(for: request)
+    guard let httpResponse = response as? HTTPURLResponse else {
+      throw APIClientError.invalidResponse
+    }
+    guard (200..<300).contains(httpResponse.statusCode) else {
+      // 401 时清理 token
+      if httpResponse.statusCode == 401 {
+        tokenStore.clear()
+      }
+      let serverMessage = decodeServerMessage(from: data)
+      throw APIClientError.http(httpResponse.statusCode, serverMessage)
+    }
+    if T.self == EmptyResponse.self, data.isEmpty {
+      return EmptyResponse() as! T
+    }
+    do {
+      return try decoder.decode(T.self, from: data)
+    } catch {
+      throw APIClientError.decoding(error.localizedDescription)
+    }
+  }
+  private func decodeServerMessage(from data: Data) -> String {
+    guard let envelope = try? decoder.decode(APIErrorEnvelope.self, from: data) else {
+      return String(data: data, encoding: .utf8) ?? "未知错误"
+    }
+    if let message = envelope.message, !message.isEmpty {
+      return message
+    }
+    if let detailMessage = envelope.error?.message, !detailMessage.isEmpty {
+      return detailMessage
+    }
+    if let nested = envelope.data?.error?.message, !nested.isEmpty {
+      return nested
+    }
+    return "服务器返回错误"
+  }
+}
+struct EmptyResponse: Decodable {}
+extension Dictionary where Key == String, Value == Any {
+  func toJSONData() -> Data? {
+    guard JSONSerialization.isValidJSONObject(self) else { return nil }
+    return try? JSONSerialization.data(withJSONObject: self, options: [])
+  }
+}
+// File: Config/AppConfig.swift
+import Foundation
+enum AppEnvironment: String {
+  case development
+  case staging
+  case production
+}
+struct AppConfig {
+  static let shared = AppConfig()
+  let environment: AppEnvironment
+  let apiBaseURL: URL
+  let timeoutSeconds: TimeInterval = 5000 // 硬性要求：不超过 5000 秒
+  private init() {
+    #if DEBUG
+    environment = .development
+    #else
+    environment = .production
+    #endif
+    let env = ProcessInfo.processInfo.environment
+    let baseURLString = env["MOBILE_API_BASE_URL"] ?? "http://127.0.0.1:23004/api/v1"
+    guard let baseURL = URL(string: baseURLString) else {
+      fatalError("无法解析 API 基础地址: \(baseURLString)")
+    }
+    apiBaseURL = baseURL
+  }
+}
+// File: ViewModels/NarrativeViewModel.swift
+import Foundation
+import Combine
+@MainActor
+final class NarrativeViewModel: ObservableObject {
+  @Published var projectId: String = ""
+  @Published var draftTitle: String = ""
+  @Published var draftSummary: String = ""
+  @Published var draftExpansion: String = ""
+  @Published private(set) var threads: [NarrativeThread] = []
+  @Published private(set) var beats: [NarrativeBeat] = []
+  @Published private(set) var compass: MemoryCompass?
+  @Published private(set) var tokenUsage = TokenUsage()
+  @Published private(set) var isLoading = false
+  @Published var errorMessage: String?
+  @Published var selectedThreadId: String?
+  @Published var tokenInput: String = ""
+  private let apiClient = APIClient.shared
+  func attachProject(_ id: String) async {
+    guard !id.trimmingCharacters(in: .whitespaces).isEmpty else {
+      errorMessage = "请先填写项目ID"
+      return
+    }
+    projectId = id
+    await loadAll()
+  }
+  func loadAll() async {
+    guard !projectId.isEmpty else { return }
+    isLoading = true
+    errorMessage = nil
+    defer { isLoading = false }
+    do {
+      try await withThrowingTaskGroup(of: Void.self) { group in
+        group.addTask { try await self.fetchThreads() }
+        group.addTask { try await self.refreshCompass() }
+        group.addTask { self.recalculateTokens() }
+        try await group.waitForAll()
+      }
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+  func fetchThreads() async throws {
+    let query = [URLQueryItem(name: "project_id", value: projectId)]
+    let endpoint = Endpoint(path: "/narratives/threads", queryItems: query)
+    let response: APIEnvelope<NarrativeThreadListResponse> = try await apiClient.send(endpoint)
+    threads = response.data?.threads ?? []
+    if selectedThreadId == nil {
+      selectedThreadId = threads.first?.threadId
+    }
+    try await fetchBeatsIfNeeded()
+  }
+  func fetchBeatsIfNeeded() async throws {
+    guard let threadId = selectedThreadId else {
+      beats = []
+      return
+    }
+    let endpoint = Endpoint(path: "/narratives/threads/\(threadId)/beats")
+    let response: APIEnvelope<NarrativeBeatListResponse> = try await apiClient.send(endpoint)
+    beats = response.data?.beats ?? []
+    recalculateTokens()
+  }
+  func createThread() async {
+    guard !draftTitle.isEmpty else {
+      errorMessage = "请填写叙事线标题"
+      return
+    }
+    isLoading = true
+    errorMessage = nil
+    defer { isLoading = false }
+    let bodyDict: [String: Any] = [
+      "project_id": projectId,
+      "title": draftTitle,
+      "summary": draftSummary.isEmpty ? "多线叙事初稿" : draftSummary
+    ]
+    guard let body = bodyDict.toJSONData() else { return }
+    do {
+      let endpoint = Endpoint(path: "/narratives/threads", method: .post, body: body)
+      let response: APIEnvelope<NarrativeThread> = try await apiClient.send(endpoint)
+      if let thread = response.data {
+        threads.insert(thread, at: 0)
+        selectedThreadId = thread.threadId
+        draftTitle = ""
+        draftSummary = ""
+      }
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+  func continueThread() async {
+    guard let threadId = selectedThreadId else { return }
+    isLoading = true
+    errorMessage = nil
+    defer { isLoading = false }
+    let bodyDict: [String: Any] = [
+      "project_id": projectId,
+      "generation_hint": draftExpansion.isEmpty ? "延展当前支线剧情" : draftExpansion
+    ]
+    guard let body = bodyDict.toJSONData() else { return }
+    do {
+      let endpoint = Endpoint(path: "/narratives/threads/\(threadId)/beats", method: .post, body: body)
+      let response: APIEnvelope<NarrativeBeatListResponse> = try await apiClient.send(endpoint)
+      beats = response.data?.beats ?? beats
+      recalculateTokens()
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+  func refreshCompass() async throws {
+    let query = [URLQueryItem(name: "project_id", value: projectId)]
+    let endpoint = Endpoint(path: "/memory/compass", queryItems: query)
+    let response: APIEnvelope<MemoryCompass> = try await apiClient.send(endpoint)
+    compass = response.data
+  }
+  func recalculateTokens() {
+    let promptFromDraft = TokenEstimator.estimateTokens(for: draftTitle + draftSummary + draftExpansion + tokenInput)
+    let remoteTokens = threads.compactMap { $0.tokensUsed }.reduce(0, +)
+    let beatTokens = beats.compactMap { $0.tokensUsed }.reduce(0, +)
+    tokenUsage.promptTokens = promptFromDraft
+    tokenUsage.completionTokens = beatTokens
+    tokenUsage.cachedTokens = 0
+    if tokenUsage.totalTokens < remoteTokens {
+      tokenUsage.completionTokens = remoteTokens
+    }
+  }
+}
+// File: ViewModels/ProjectsViewModel.swift
+import Foundation
+import Combine
+@MainActor
+final class ProjectsViewModel: ObservableObject {
+  @Published var projects: [Project] = []
+  @Published var isLoading = false
+  @Published var errorMessage: String?
+  @Published var searchText: String = ""
+  @Published var selectedStatus: String? = nil
+  @Published var isCreating = false
+  @Published var newProjectName: String = ""
+  @Published var newProjectIdea: String = ""
+  private let apiClient = APIClient.shared
+  func load() async {
+    await fetchProjects()
+  }
+  func fetchProjects() async {
+    isLoading = true
+    errorMessage = nil
+    defer { isLoading = false }
+    var queryItems: [URLQueryItem] = [
+      URLQueryItem(name: "page", value: "1"),
+      URLQueryItem(name: "limit", value: "50")
+    ]
+    if !searchText.isEmpty {
+      queryItems.append(URLQueryItem(name: "search", value: searchText))
+    }
+    if let status = selectedStatus, !status.isEmpty {
+      queryItems.append(URLQueryItem(name: "status", value: status))
+    }
+    do {
+      let endpoint = Endpoint(path: "/projects", queryItems: queryItems)
+      let payload: ProjectsListPayload = try await apiClient.send(endpoint)
+      projects = payload.data?.projects ?? []
+    } catch {
+      errorMessage = error.localizedDescription
+      projects = []
+    }
+  }
+  func toggleFavorite(for project: Project) async {
+    let payload: [String: Any] = ["is_favorite": !(project.isFavorite ?? false)]
+    guard let body = payload.toJSONData() else { return }
+    do {
+      let endpoint = Endpoint(path: "/projects/\(project.projectId)", method: .put, body: body)
+      let response: APIEnvelope<Project> = try await apiClient.send(endpoint)
+      if let updated = response.data {
+        updateLocal(project: updated)
+      } else {
+        await fetchProjects()
+      }
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+  func delete(project: Project) async {
+    do {
+      let endpoint = Endpoint(path: "/projects/\(project.projectId)", method: .delete)
+      _ = try await apiClient.send(endpoint, decodeTo: APIEnvelope<EmptyResponse>.self)
+      projects.removeAll { $0.projectId == project.projectId }
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+  func createProject() async {
+    guard !newProjectName.isEmpty else {
+      errorMessage = "请输入项目名称"
+      return
+    }
+    isCreating = true
+    errorMessage = nil
+    defer { isCreating = false }
+    var payload: [String: Any] = ["project_name": newProjectName]
+    if !newProjectIdea.isEmpty {
+      payload["first_idea"] = newProjectIdea
+    }
+    guard let body = payload.toJSONData() else { return }
+    do {
+      let endpoint = Endpoint(path: "/projects", method: .post, body: body)
+      let response: APIEnvelope<Project> = try await apiClient.send(endpoint)
+      if let project = response.data {
+        projects.insert(project, at: 0)
+        newProjectName = ""
+        newProjectIdea = ""
+      }
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+  private func updateLocal(project: Project) {
+    guard let index = projects.firstIndex(where: { $0.projectId == project.projectId }) else {
+      return
+    }
+    projects[index] = project
+  }
+}
+// File: ViewModels/CreationViewModel.swift
+import Foundation
+import Combine
+enum CreationStepKind: String, CaseIterable, Identifiable {
+  case inspiration
+  case storyCore
+  case protagonist
+  case relationships
+  case plotSequence
+  case writing
+  var id: String { rawValue }
+  var title: String {
+    switch self {
+    case .inspiration: return "输入灵感"
+    case .storyCore: return "故事核心"
+    case .protagonist: return "主角人物"
+    case .relationships: return "配角关系"
+    case .plotSequence: return "情节序列"
+    case .writing: return "正文生成"
+    }
+  }
+  var description: String {
+    switch self {
+    case .inspiration: return "输入创作需求并生成多条灵感"
+    case .storyCore: return "选择并深化故事核心"
+    case .protagonist: return "生成并修改主角小传"
+    case .relationships: return "生成关键配角及关系图"
+    case .plotSequence: return "构建情节和场景节拍"
+    case .writing: return "根据节拍生成完整稿件"
+    }
+  }
+}
+enum StepStatus: Equatable {
+  case idle
+  case running
+  case completed
+  case failed(String)
+  var label: String {
+    switch self {
+    case .idle: return "待处理"
+    case .running: return "生成中"
+    case .completed: return "已完成"
+    case .failed: return "失败"
+    }
+  }
+}
+struct CreationStepViewData: Identifiable {
+  let kind: CreationStepKind
+  var status: StepStatus = .idle
+  var resultPreview: String? = nil
+  var updatedAt: Date? = nil
+  var id: String { kind.id }
+}
+@MainActor
+final class CreationViewModel: ObservableObject {
+  @Published var projectId: String = ""
+  @Published var projectName: String = ""
+  @Published var firstIdea: String = ""
+  @Published var brainstormIdeas: [String] = []
+  @Published var selectedIdea: String? = nil
+  @Published var storyCore: String = ""
+  @Published var protagonist: String = ""
+  @Published var supportingCharacters: [SupportingCharacterDTO] = []
+  @Published var plotSequence: String = ""
+  @Published var sceneBeats: [SequenceBeatItem] = []
+  @Published var scriptContent: String = ""
+  @Published var isLoadingProject = false
+  @Published var errorMessage: String?
+  @Published var steps: [CreationStepViewData] = CreationStepKind.allCases.map {
+    CreationStepViewData(kind: $0)
+  }
+  private let apiClient = APIClient.shared
+  func attachProject(id: String) async {
+    guard !id.isEmpty else {
+      errorMessage = "请输入项目ID"
+      return
+    }
+    isLoadingProject = true
+    errorMessage = nil
+    defer { isLoadingProject = false }
+    do {
+      let endpoint = Endpoint(path: "/projects/\(id)")
+      let response: APIEnvelope<Project> = try await apiClient.send(endpoint)
+      guard let project = response.data else {
+        throw APIClientError.decoding("未获取到项目数据")
+      }
+      projectId = project.projectId
+      projectName = project.projectName
+      storyCore = project.storyCore ?? ""
+      firstIdea = project.firstIdea ?? ""
+      brainstormIdeas = project.brainstormIdeas ?? []
+      protagonist = project.leadingBrief ?? ""
+      plotSequence = project.storyCore ?? ""
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+  func ensureProjectIfNeeded() async {
+    guard projectId.isEmpty else { return }
+    errorMessage = nil
+    let payload: [String: Any] = [
+      "project_name": projectName.isEmpty ? "移动端创作项目" : projectName,
+      "first_idea": firstIdea.isEmpty ? "" : firstIdea
+    ]
+    guard let body = payload.toJSONData() else {
+      errorMessage = "无法创建项目"
+      return
+    }
+    do {
+      let endpoint = Endpoint(path: "/projects", method: .post, body: body)
+      let response: APIEnvelope<Project> = try await apiClient.send(endpoint)
+      guard let project = response.data else {
+        throw APIClientError.decoding("创建项目失败")
+      }
+      projectId = project.projectId
+      projectName = project.projectName
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+  func run(step kind: CreationStepKind) async {
+    if projectId.isEmpty {
+      await ensureProjectIfNeeded()
+      if projectId.isEmpty { return }
+    }
+    updateStep(kind: kind, status: .running)
+    do {
+      switch kind {
+      case .inspiration:
+        try await runBrainstorm()
+      case .storyCore:
+        try await runStoryCore()
+      case .protagonist:
+        try await runProtagonist()
+      case .relationships:
+        try await runSupporting()
+      case .plotSequence:
+        try await runPlotSequence()
+      case .writing:
+        try await runScript()
+      }
+      updateStep(kind: kind, status: .completed, result: preview(for: kind))
+    } catch {
+      errorMessage = error.localizedDescription
+      updateStep(kind: kind, status: .failed(error.localizedDescription))
+    }
+  }
+  private func runBrainstorm() async throws {
+    let request = BrainstormGenerateRequest(
+      firstIdea: firstIdea.isEmpty ? "请帮我创作一部都市奇幻爱情故事" : firstIdea,
+      numIdeas: 5,
+      creativeStyle: [],
+      conceptType: "fantasy",
+      conceptDepth: nil,
+      plotType: "conflict_internal",
+      projectId: projectId
+    )
+    guard let body = try? JSONEncoder().encode(request) else {
+      throw APIClientError.decoding("无法构建灵感请求")
+    }
+    let endpoint = Endpoint(path: "/llm/brainstorm", method: .post, body: body)
+    let response: BrainstormGenerateResponse = try await apiClient.send(endpoint)
+    brainstormIdeas = response.data?.brainstormIdeas ?? []
+    selectedIdea = brainstormIdeas.first
+    if let idea = selectedIdea {
+      try await persistStoryCore(idea)
+    }
+  }
+  private func runStoryCore() async throws {
+    guard !storyCore.isEmpty || selectedIdea != nil else {
+      throw APIClientError.decoding("请先生成或选择灵感")
+    }
+    if storyCore.isEmpty, let idea = selectedIdea {
+      storyCore = idea
+    }
+    let payload: [String: Any] = [
+      "project_id": projectId,
+      "story_core": storyCore,
+      "leading_quantity": 1
+    ]
+    guard let body = payload.toJSONData() else { return }
+    let endpoint = Endpoint(path: "/projects/\(projectId)/story-core/advance", method: .post, body: body)
+    _ = try await apiClient.send(endpoint, decodeTo: APIEnvelope<EmptyResponse>.self)
+  }
+  private func runProtagonist() async throws {
+    let payload: [String: Any] = [
+      "project_id": projectId,
+      "leading_quantity": 1
+    ]
+    guard let body = payload.toJSONData() else { return }
+    let query = [URLQueryItem(name: "project_id", value: projectId)]
+    let endpoint = Endpoint(path: "/protagonist/generate", method: .post, queryItems: query, body: body)
+    let response: ProtagonistResponse = try await apiClient.send(endpoint)
+    protagonist = response.data?.leadingBrief ?? protagonist
+  }
+  private func runSupporting() async throws {
+    let endpoint = Endpoint(path: "/projects/\(projectId)/generate/supporting", method: .post)
+    let response: GenerateResponse = try await apiClient.send(endpoint)
+    if let jsonString = response.content?.data(using: .utf8),
+       let decoded = try? JSONDecoder().decode([SupportingCharacterDTO].self, from: jsonString) {
+      supportingCharacters = decoded
+    } else {
+      supportingCharacters = []
+    }
+  }
+  private func runPlotSequence() async throws {
+    let sequencePayload: [String: Any] = ["project_id": projectId]
+    let endpoint = Endpoint(path: "/sequence-act/generate", method: .post, body: sequencePayload.toJSONData())
+    let response: PlotSequenceResponse = try await apiClient.send(endpoint)
+    plotSequence = response.data?.sequence ?? plotSequence
+    let beatsPayload: [String: Any] = [
+      "project_id": projectId,
+      "sequence_id": "seq_main"
+    ]
+    let beatsEndpoint = Endpoint(path: "/sequence-beat/generate", method: .post, body: beatsPayload.toJSONData())
+    let beats: SequenceBeatResponse = try await apiClient.send(beatsEndpoint)
+    if let payload = beats.data?.sceneBeats {
+      sceneBeats = payload
+    }
+  }
+  private func runScript() async throws {
+    guard !sceneBeats.isEmpty else {
+      throw APIClientError.decoding("请先生成场景节拍")
+    }
+    let beatSummaries = sceneBeats.map { $0.summary }
+    let body: [String: Any] = [
+      "template_name": "sequence_scripts",
+      "variables": [
+        "project_id": projectId,
+        "current_seq_beats": beatSummaries
+      ],
+      "metadata": ["project_id": projectId]
+    ]
+    guard let data = body.toJSONData() else { return }
+    let endpoint = Endpoint(path: "/llm/generate-universal", method: .post, body: data)
+    let response: SequenceScriptResponse = try await apiClient.send(endpoint)
+    scriptContent = response.data?.generatedContent ?? scriptContent
+  }
+  private func updateStep(kind: CreationStepKind, status: StepStatus, result: String? = nil) {
+    guard let index = steps.firstIndex(where: { $0.kind == kind }) else { return }
+    steps[index].status = status
+    if let result = result {
+      steps[index].resultPreview = result
+    }
+    steps[index].updatedAt = Date()
+  }
+  private func preview(for kind: CreationStepKind) -> String {
+    switch kind {
+    case .inspiration:
+      return selectedIdea ?? brainstormIdeas.first ?? ""
+    case .storyCore:
+      return storyCore
+    case .protagonist:
+      return protagonist
+    case .relationships:
+      return supportingCharacters.first?.description ?? ""
+    case .plotSequence:
+      return plotSequence
+    case .writing:
+      return scriptContent
+    }
+  }
+  private func persistStoryCore(_ content: String) async throws {
+    let payload: [String: Any] = ["story_core": content]
+    guard let body = payload.toJSONData() else { return }
+    let endpoint = Endpoint(path: "/projects/\(projectId)", method: .put, body: body)
+    _ = try await apiClient.send(endpoint, decodeTo: APIEnvelope<Project>.self)
+    storyCore = content
+  }
+}
+// File: ViewModels/AuthViewModel.swift
+import Foundation
+import Combine
+@MainActor
+final class AuthViewModel: ObservableObject {
+  @Published var username: String = "user001"
+  @Published var password: String = "abcd123456"
+  @Published var email: String = "user001@example.com"
+  @Published var nickname: String = "新用户"
+  @Published var isLoading = false
+  @Published var errorMessage: String?
+  @Published private(set) var user: User?
+  private let apiClient = APIClient.shared
+  private let tokenStore = AuthTokenStore.shared
+  var isAuthenticated: Bool {
+    user != nil
+  }
+  func bootstrapSession() async {
+    guard tokenStore.token() != nil else { return }
+    await loadProfile()
+  }
+  func login() async {
+    guard !username.isEmpty, !password.isEmpty else {
+      errorMessage = "请输入账号和密码"
+      return
+    }
+    isLoading = true
+    errorMessage = nil
+    defer { isLoading = false }
+    let requestBody = LoginRequest(username: username, password: password)
+    guard let body = try? JSONEncoder().encode(requestBody) else {
+      errorMessage = "构建登录请求失败"
+      return
+    }
+    do {
+      let endpoint = Endpoint(path: "/auth/login", method: .post, body: body)
+      let envelope: APIEnvelope<LoginResult> = try await apiClient.send(endpoint)
+      guard let payload = envelope.data else {
+        throw APIClientError.decoding(envelope.message ?? "登录响应缺少数据")
+      }
+      tokenStore.save(token: payload.token)
+      user = payload.user
+    } catch {
+      errorMessage = error.localizedDescription
+      tokenStore.clear()
+    }
+  }
+  func loadProfile() async {
+    isLoading = true
+    errorMessage = nil
+    defer { isLoading = false }
+    do {
+      let endpoint = Endpoint(path: "/auth/profile", method: .get)
+      let envelope: APIEnvelope<User> = try await apiClient.send(endpoint)
+      guard let profile = envelope.data else {
+        throw APIClientError.decoding("获取用户信息失败")
+      }
+      user = profile
+    } catch {
+      errorMessage = error.localizedDescription
+      tokenStore.clear()
+      user = nil
+    }
+  }
+  func logout() {
+    tokenStore.clear()
+    user = nil
+  }
+  func registerAccount() async {
+    guard !username.isEmpty, !password.isEmpty, !email.isEmpty else {
+      errorMessage = "请填写完整注册信息"
+      return
+    }
+    isLoading = true
+    errorMessage = nil
+    defer { isLoading = false }
+    let registerPayload = RegisterRequest(
+      username: username,
+      email: email,
+      password: password,
+      nickname: nickname.isEmpty ? nil : nickname
+    )
+    guard let body = try? JSONEncoder().encode(registerPayload) else {
+      errorMessage = "构建注册请求失败"
+      return
+    }
+    do {
+      let endpoint = Endpoint(path: "/users/register", method: .post, body: body)
+      let response: APIEnvelope<User> = try await apiClient.send(endpoint)
+      guard response.data != nil else {
+        throw APIClientError.decoding("注册失败")
+      }
+      await login()
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+}
+// File: ViewModels/HomeViewModel.swift
+import Foundation
+import Combine
+struct HomeStats {
+  var totalProjects: Int = 0
+  var activeProjects: Int = 0
+  var completedProjects: Int = 0
+  var totalWordCount: Int = 0
+}
+@MainActor
+final class HomeViewModel: ObservableObject {
+  @Published private(set) var stats = HomeStats()
+  @Published private(set) var projects: [Project] = []
+  @Published var isLoading = false
+  @Published var errorMessage: String?
+  private let apiClient = APIClient.shared
+  func load() async {
+    isLoading = true
+    errorMessage = nil
+    defer { isLoading = false }
+    let queryItems = [
+      URLQueryItem(name: "limit", value: "20"),
+      URLQueryItem(name: "sort_by", value: "updated_at"),
+      URLQueryItem(name: "sort_order", value: "desc")
+    ]
+    do {
+      let endpoint = Endpoint(path: "/projects", queryItems: queryItems)
+      let payload: ProjectsListPayload = try await apiClient.send(endpoint)
+      guard let data = payload.data else {
+        throw APIClientError.decoding("项目列表缺少数据")
+      }
+      projects = data.projects
+      stats = makeStats(from: data.projects, total: data.total ?? data.projects.count)
+    } catch {
+      errorMessage = error.localizedDescription
+      projects = []
+    }
+  }
+  private func makeStats(from projects: [Project], total: Int) -> HomeStats {
+    var stats = HomeStats()
+    stats.totalProjects = total
+    stats.activeProjects = projects.filter { $0.status == "in_progress" || $0.status == "active" }.count
+    stats.completedProjects = projects.filter { $0.status == "completed" }.count
+    stats.totalWordCount = projects.compactMap { $0.metadata?.wordCount }.reduce(0, +)
+    return stats
+  }
+}
+// File: ViewModels/UserCenterViewModel.swift
+import Foundation
+import Combine
+@MainActor
+final class UserCenterViewModel: ObservableObject {
+  @Published private(set) var points: PointsBalance?
+  @Published private(set) var transactions: [PointsTransaction] = []
+  @Published private(set) var plans: [PaymentPlan] = []
+  @Published private(set) var pointsTiers: [PaymentPointsTier] = []
+  @Published private(set) var isLoading: Bool = false
+  @Published var selectedPlan: PaymentPlan?
+  @Published var selectedPointsTier: PaymentPointsTier?
+  @Published var desiredTokens: Int = 1500
+  @Published var selectedChannel: String = "alipay_page"
+  @Published var lastCredential: PaymentCredential?
+  @Published var errorMessage: String?
+  private let apiClient = APIClient.shared
+  func refreshAll() async {
+    await withTaskGroup(of: Void.self) { group in
+      group.addTask { await self.fetchPoints() }
+      group.addTask { await self.fetchTransactions() }
+      group.addTask { await self.fetchPlans() }
+    }
+  }
+  func fetchPoints() async {
+    await requestWrapper { [weak self] in
+      guard let self else { return }
+      let endpoint = Endpoint(path: "/points/balance")
+      let response: APIEnvelope<PointsBalance> = try await self.apiClient.send(endpoint)
+      guard let data = response.data else { throw APIClientError.decoding("积分数据为空") }
+      self.points = data
+    }
+  }
+  func fetchTransactions() async {
+    await requestWrapper { [weak self] in
+      guard let self else { return }
+      let endpoint = Endpoint(path: "/points/transactions")
+      let response: APIEnvelope<PointsTransactionsResponse> = try await self.apiClient.send(endpoint)
+      self.transactions = response.data?.transactions ?? []
+    }
+  }
+  func fetchPlans() async {
+    await requestWrapper { [weak self] in
+      guard let self else { return }
+      let endpoint = Endpoint(path: "/payments/plans")
+      let response: APIEnvelope<PaymentPlanListResponseDTO> = try await self.apiClient.send(endpoint)
+      if let payload = response.data {
+        self.plans = payload.plans.map {
+          PaymentPlan(
+            planId: $0.planId,
+            name: $0.name,
+            tier: $0.tier,
+            tierLabel: $0.tierLabel,
+            description: $0.description,
+            durationDays: $0.durationDays,
+            pointsBonus: $0.pointsBonus,
+            amountFormatted: $0.price.amountFormatted,
+            currency: $0.price.currency.uppercased(),
+            popular: $0.popular,
+            badge: $0.badge,
+            features: $0.features ?? []
+          )
+        }
+        self.pointsTiers = payload.pointsTiers.map {
+          PaymentPointsTier(
+            tier: $0.tier,
+            tierLabel: $0.tierLabel,
+            points: $0.points,
+            priceLabel: $0.priceLabel,
+            multiplier: $0.multiplier
+          )
+        }
+        self.selectedPlan = self.plans.first
+        self.selectedPointsTier = self.pointsTiers.first
+        if let defaultTier = self.pointsTiers.first {
+          self.desiredTokens = defaultTier.points
+        }
+      }
+    }
+  }
+  func createOrder(planId: String) async {
+    await requestWrapper { [weak self] in
+      guard let self else { return }
+      let bodyDict: [String: Any] = [
+        "plan_id": planId,
+        "channel": self.selectedChannel
+      ]
+      guard let body = bodyDict.toJSONData() else { throw APIClientError.decoding("无效参数") }
+      let endpoint = Endpoint(path: "/payments/orders", method: .post, body: body)
+      let response: APIEnvelope<CreatePaymentOrderResponse> = try await self.apiClient.send(endpoint)
+      guard let payload = response.data else { throw APIClientError.decoding("订单创建失败") }
+      self.lastCredential = payload.credential
+    }
+  }
+  func purchaseSelected() async {
+    if let plan = selectedPlan {
+      await createOrder(planId: plan.planId)
+      return
+    }
+    if let tier = selectedPointsTier {
+      await createPointsOrder(tier: tier)
+    }
+  }
+  func createPointsOrder(tier: PaymentPointsTier) async {
+    await requestWrapper { [weak self] in
+      guard let self else { return }
+      let bodyDict: [String: Any] = [
+        "points_tier": tier.tier,
+        "channel": self.selectedChannel
+      ]
+      guard let body = bodyDict.toJSONData() else { throw APIClientError.decoding("无效参数") }
+      let endpoint = Endpoint(path: "/payments/points", method: .post, body: body)
+      let response: APIEnvelope<CreatePaymentOrderResponse> = try await self.apiClient.send(endpoint)
+      guard let payload = response.data else { throw APIClientError.decoding("订单创建失败") }
+      self.lastCredential = payload.credential
+      self.selectedPointsTier = tier
+      self.desiredTokens = tier.points
+    }
+  }
+  var desiredCostCNY: Double {
+    TokenEstimator.costInCNY(forTokens: desiredTokens)
+  }
+  private func requestWrapper(_ block: @escaping () async throws -> Void) async {
+    isLoading = true
+    errorMessage = nil
+    defer { isLoading = false }
+    do {
+      try await block()
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+}
